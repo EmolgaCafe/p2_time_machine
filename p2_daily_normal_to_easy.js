@@ -1,33 +1,34 @@
 /**
- * Phoenix 2 Daily Stage Injector - Experiment 2
+ * Phoenix 2 Daily Stage Injector - Experiment 3
  *
  * 实验目标：
- *   Easy 保留自己的所有 metadata，
- *   只把：
+ *   Easy 保留自身绝大多数 metadata，
+ *   只从 Normal 复制：
  *
- *     field 2 = stage ID
- *     field 3 = Lua stage script
+ *     field 2  = stage ID
+ *     field 3  = Lua stage
+ *     field 7  = difficulty/category-like metadata
+ *     field 12 = title/template-like metadata
  *
- *   替换成 Normal 的内容。
+ * 其它：
+ *     field 1   = Easy
+ *     field 4-6 = Easy
+ *     field 8+  = Easy
+ *     field 14  = Easy
+ *     field 19  = Easy
  *
- * 其余字段：
- *   field 1  保留原 Easy
- *   field 4+ 保留原 Easy
- *
- * 为了暂时不修改外层 protobuf length，
- * 如果 Normal Lua 较短，则在 Lua 末尾补空格，
- * 保证整个 Easy DailyStage payload 长度完全不变。
+ * 仍使用 Lua trailing spaces 保持 Easy payload 长度不变。
  */
 
 (function () {
 
-    const PREFIX = "[P2-Field23-Test]";
+    const PREFIX = "[P2-Field23712-Test]";
 
     function log(msg) {
         console.log(`${PREFIX} ${msg}`);
     }
 
-    function finishOriginal(msg) {
+    function fail(msg) {
         log(`❌ ${msg}`);
         $done({});
     }
@@ -70,9 +71,7 @@
                 );
 
             const out =
-                new Uint8Array(
-                    src.length
-                );
+                new Uint8Array(src.length);
 
             out.set(src);
 
@@ -86,9 +85,7 @@
     function asciiBytes(str) {
 
         const out =
-            new Uint8Array(
-                str.length
-            );
+            new Uint8Array(str.length);
 
         for (
             let i = 0;
@@ -184,21 +181,22 @@
 
     function concat(parts) {
 
-        let length = 0;
+        let total = 0;
 
-        for (const p of parts) {
-            length += p.length;
+        for (
+            const p of parts
+        ) {
+            total += p.length;
         }
 
         const out =
-            new Uint8Array(
-                length
-            );
+            new Uint8Array(total);
 
         let offset = 0;
 
-        for (const p of parts) {
-
+        for (
+            const p of parts
+        ) {
             out.set(
                 p,
                 offset
@@ -224,7 +222,8 @@
         if (
             limit === undefined
         ) {
-            limit = buf.length;
+            limit =
+                buf.length;
         }
 
         let value = 0;
@@ -294,7 +293,7 @@
 
 
     // ============================================================
-    // Generic protobuf parser
+    // Protobuf parser
     // ============================================================
 
     function parseFields(message) {
@@ -341,11 +340,14 @@
                 fieldNo,
                 wire,
                 dataStart: null,
-                dataEnd: null
+                dataEnd: null,
+                end: null
             };
 
 
-            if (wire === 0) {
+            if (
+                wire === 0
+            ) {
 
                 const v =
                     readVarint(
@@ -359,9 +361,11 @@
                     );
                 }
 
+                field.value =
+                    v.value;
+
                 pos =
                     v.next;
-
             }
 
             else if (
@@ -369,7 +373,6 @@
             ) {
 
                 pos += 8;
-
             }
 
             else if (
@@ -403,7 +406,6 @@
 
                 pos =
                     field.dataEnd;
-
             }
 
             else if (
@@ -411,7 +413,6 @@
             ) {
 
                 pos += 4;
-
             }
 
             else {
@@ -443,7 +444,7 @@
     }
 
 
-    function getField(
+    function getLengthField(
         message,
         fields,
         fieldNo
@@ -461,7 +462,6 @@
 
                 return {
                     field: f,
-
                     data:
                         message.subarray(
                             f.dataStart,
@@ -475,8 +475,31 @@
     }
 
 
+    function getVarintField(
+        fields,
+        fieldNo
+    ) {
+
+        for (
+            const f of fields
+        ) {
+
+            if (
+                f.fieldNo ===
+                    fieldNo &&
+                f.wire === 0
+            ) {
+
+                return f;
+            }
+        }
+
+        return null;
+    }
+
+
     // ============================================================
-    // DailyStage locator
+    // Locate real DailyStage
     // ============================================================
 
     function locateDailyStage(
@@ -512,12 +535,9 @@
                 idPos + 1;
 
 
-            // --------------------------------------------
-            // 找 field 1 的 0A + length
-            // --------------------------------------------
-
             let payloadStart =
                 -1;
+
 
             for (
                 let p =
@@ -571,15 +591,12 @@
             }
 
 
-            // --------------------------------------------
-            // 找包住整个 DailyStage 的 parent length
-            // --------------------------------------------
+            let outerStart =
+                -1;
 
             let payloadLength =
                 -1;
 
-            let outerStart =
-                -1;
 
             for (
                 let p =
@@ -600,12 +617,7 @@
                     );
 
                 if (
-                    !tagInfo
-                ) {
-                    continue;
-                }
-
-                if (
+                    !tagInfo ||
                     (
                         tagInfo.value &
                         7
@@ -622,14 +634,9 @@
                     );
 
                 if (
-                    !lenInfo
-                ) {
-                    continue;
-                }
-
-                if (
+                    !lenInfo ||
                     lenInfo.next !==
-                    payloadStart
+                        payloadStart
                 ) {
                     continue;
                 }
@@ -661,16 +668,13 @@
                 payloadStart +
                 payloadLength;
 
+
             const payload =
                 buf.subarray(
                     payloadStart,
                     payloadEnd
                 );
 
-
-            // --------------------------------------------
-            // 验证它确实是大型 Stage record
-            // --------------------------------------------
 
             try {
 
@@ -679,22 +683,25 @@
                         payload
                     );
 
+
                 const f1 =
-                    getField(
+                    getLengthField(
                         payload,
                         fields,
                         1
                     );
 
+
                 const f2 =
-                    getField(
+                    getLengthField(
                         payload,
                         fields,
                         2
                     );
 
+
                 const f3 =
-                    getField(
+                    getLengthField(
                         payload,
                         fields,
                         3
@@ -710,27 +717,24 @@
                 }
 
 
-                const idText =
+                if (
                     asciiString(
                         f1.data
-                    );
-
-                const stageText =
-                    asciiString(
-                        f2.data
-                    );
-
-
-                if (
-                    idText !==
+                    ) !==
                     identifier
                 ) {
                     continue;
                 }
 
 
+                const stage =
+                    asciiString(
+                        f2.data
+                    );
+
+
                 if (
-                    stageText.indexOf(
+                    stage.indexOf(
                         "stage."
                     ) !== 0
                 ) {
@@ -763,8 +767,7 @@
                     payloadStart,
                     payloadEnd,
                     payloadLength,
-                    stage:
-                        stageText,
+                    stage,
                     luaLength:
                         f3.data.length
                 });
@@ -794,19 +797,19 @@
 
 
     // ============================================================
-    // Experiment:
+    // Build:
     //
-    // 保留 Easy record
+    // Easy
     //
-    // 只修改：
+    // +
     //
-    // field 2 = Normal field2
-    // field 3 = Normal field3
-    //
-    // field 1 / field 4+ 全部 Easy 原样保留。
+    // Normal field 2
+    // Normal field 3
+    // Normal field 7
+    // Normal field 12
     // ============================================================
 
-    function replaceField2And3(
+    function buildPatch(
         easyPayload,
         normalPayload
     ) {
@@ -823,48 +826,101 @@
 
 
         const normalF2 =
-            getField(
+            getLengthField(
                 normalPayload,
                 normalFields,
                 2
             );
 
+
         const normalF3 =
-            getField(
+            getLengthField(
                 normalPayload,
                 normalFields,
                 3
             );
 
 
+        const normalF7 =
+            getVarintField(
+                normalFields,
+                7
+            );
+
+
+        const normalF12 =
+            getVarintField(
+                normalFields,
+                12
+            );
+
+
         if (
             !normalF2 ||
-            !normalF3
+            !normalF3 ||
+            !normalF7 ||
+            !normalF12
         ) {
             throw new Error(
-                "Normal missing field2/field3"
+                "Normal missing required fields"
             );
         }
 
 
-        // --------------------------------------------
-        // 先计算除 field3 外最终 record 长度
-        // --------------------------------------------
+        // ========================================================
+        // 预构造 Normal field7
+        // ========================================================
+
+        const field7Bytes =
+            concat([
+                encodeVarint(
+                    normalF7.tag
+                ),
+
+                encodeVarint(
+                    normalF7.value
+                )
+            ]);
+
+
+        // ========================================================
+        // 预构造 Normal field12
+        // ========================================================
+
+        const field12Bytes =
+            concat([
+                encodeVarint(
+                    normalF12.tag
+                ),
+
+                encodeVarint(
+                    normalF12.value
+                )
+            ]);
+
+
+        // ========================================================
+        // 计算除 field3 外长度
+        // ========================================================
 
         let fixedLength = 0;
 
-        let easyF3Count = 0;
+        let foundF2 = 0;
+        let foundF3 = 0;
+        let foundF7 = 0;
+        let foundF12 = 0;
 
 
         for (
             const f of easyFields
         ) {
 
-            // field2 替换成 Normal field2
             if (
                 f.fieldNo === 2 &&
                 f.wire === 2
             ) {
+
+                foundF2++;
 
                 fixedLength +=
                     encodeVarint(
@@ -880,17 +936,36 @@
                     normalF2.data.length;
             }
 
-            // field3 稍后单独计算
             else if (
                 f.fieldNo === 3 &&
                 f.wire === 2
             ) {
 
-                easyF3Count++;
-
+                foundF3++;
             }
 
-            // 其它全部保留 Easy 原始 bytes
+            else if (
+                f.fieldNo === 7 &&
+                f.wire === 0
+            ) {
+
+                foundF7++;
+
+                fixedLength +=
+                    field7Bytes.length;
+            }
+
+            else if (
+                f.fieldNo === 12 &&
+                f.wire === 0
+            ) {
+
+                foundF12++;
+
+                fixedLength +=
+                    field12Bytes.length;
+            }
+
             else {
 
                 fixedLength +=
@@ -901,16 +976,16 @@
 
 
         if (
-            easyF3Count !== 1
+            foundF2 !== 1 ||
+            foundF3 !== 1 ||
+            foundF7 !== 1 ||
+            foundF12 !== 1
         ) {
+
             throw new Error(
-                `Easy field3 count=${easyF3Count}`
+                "unexpected Easy field structure"
             );
         }
-
-
-        const targetLength =
-            easyPayload.length;
 
 
         const script =
@@ -923,9 +998,13 @@
             );
 
 
-        // --------------------------------------------
-        // 算 padding
-        // --------------------------------------------
+        const targetLength =
+            easyPayload.length;
+
+
+        // ========================================================
+        // Padding
+        // ========================================================
 
         let pad =
             Math.max(
@@ -941,24 +1020,24 @@
             );
 
 
-        // varint 长度可能变化，迭代稳定
         for (
             let i = 0;
             i < 8;
             i++
         ) {
 
-            const lenBytes =
+            const newLenBytes =
                 encodeVarint(
                     script.length +
                     pad
                 ).length;
 
+
             const newPad =
                 targetLength -
                 fixedLength -
                 field3Tag.length -
-                lenBytes -
+                newLenBytes -
                 script.length;
 
 
@@ -967,6 +1046,7 @@
             ) {
                 break;
             }
+
 
             pad =
                 newPad;
@@ -978,7 +1058,7 @@
         ) {
 
             throw new Error(
-                `Normal field2+3 比 Easy 可用空间大 ${-pad} bytes`
+                `payload too large by ${-pad} bytes`
             );
         }
 
@@ -988,10 +1068,15 @@
                 pad
             );
 
+
         spaces.fill(
             0x20
         );
 
+
+        // ========================================================
+        // Rebuild
+        // ========================================================
 
         const parts = [];
 
@@ -1000,9 +1085,9 @@
             const f of easyFields
         ) {
 
-            // ========================================
-            // field2 -> Normal
-            // ========================================
+            // -------------------------
+            // field2 <- Normal
+            // -------------------------
 
             if (
                 f.fieldNo === 2 &&
@@ -1015,20 +1100,22 @@
                     )
                 );
 
+
                 parts.push(
                     encodeVarint(
                         normalF2.data.length
                     )
                 );
 
+
                 parts.push(
                     normalF2.data
                 );
             }
 
-            // ========================================
-            // field3 -> Normal Lua + padding
-            // ========================================
+            // -------------------------
+            // field3 <- Normal
+            // -------------------------
 
             else if (
                 f.fieldNo === 3 &&
@@ -1068,9 +1155,37 @@
                 }
             }
 
-            // ========================================
-            // 所有其它 field 继续使用 Easy
-            // ========================================
+            // -------------------------
+            // field7 <- Normal
+            // -------------------------
+
+            else if (
+                f.fieldNo === 7 &&
+                f.wire === 0
+            ) {
+
+                parts.push(
+                    field7Bytes
+                );
+            }
+
+            // -------------------------
+            // field12 <- Normal
+            // -------------------------
+
+            else if (
+                f.fieldNo === 12 &&
+                f.wire === 0
+            ) {
+
+                parts.push(
+                    field12Bytes
+                );
+            }
+
+            // -------------------------
+            // everything else <- Easy
+            // -------------------------
 
             else {
 
@@ -1093,18 +1208,22 @@
 
         if (
             rebuilt.length !==
-            easyPayload.length
+            targetLength
         ) {
 
             throw new Error(
-                `length mismatch ${rebuilt.length} != ${easyPayload.length}`
+                `length mismatch: ${rebuilt.length} != ${targetLength}`
             );
         }
 
 
         return {
             rebuilt,
-            pad
+            pad,
+            normalF7:
+                normalF7.value,
+            normalF12:
+                normalF12.value
         };
     }
 
@@ -1119,8 +1238,8 @@
 
     if (!body) {
 
-        finishOriginal(
-            "没有 response body"
+        fail(
+            "missing body"
         );
 
         return;
@@ -1135,23 +1254,16 @@
 
     if (!view) {
 
-        finishOriginal(
-            "response body 不是 Uint8Array"
+        fail(
+            "body is not binary"
         );
 
         return;
     }
 
 
-    log(
-        `response size = ${view.length}`
-    );
-
-
     // ============================================================
-    // 自动读取：
-    //
-    // daily-commander/easy-XXXX
+    // Find Commander daily number
     // ============================================================
 
     const prefix =
@@ -1172,15 +1284,15 @@
         prefixPos < 0
     ) {
 
-        finishOriginal(
-            "没有找到 Commander Easy"
+        fail(
+            "Commander Easy not found"
         );
 
         return;
     }
 
 
-    let p =
+    let pos =
         prefixPos +
         prefix.length;
 
@@ -1189,24 +1301,24 @@
 
 
     while (
-        p < view.length &&
-        view[p] >= 48 &&
-        view[p] <= 57
+        pos < view.length &&
+        view[pos] >= 48 &&
+        view[pos] <= 57
     ) {
 
         number +=
             String.fromCharCode(
-                view[p]
+                view[pos]
             );
 
-        p++;
+        pos++;
     }
 
 
     if (!number) {
 
-        finishOriginal(
-            "读取 Daily 编号失败"
+        fail(
+            "daily number parse failed"
         );
 
         return;
@@ -1222,12 +1334,12 @@
 
 
     log(
-        `Daily = ${number}`
+        `Daily ${number}`
     );
 
 
     // ============================================================
-    // 找两个大型 stage record
+    // Locate stages
     // ============================================================
 
     const easy =
@@ -1246,8 +1358,8 @@
 
     if (!easy) {
 
-        finishOriginal(
-            "找不到 Easy Stage record"
+        fail(
+            "Easy DailyStage not found"
         );
 
         return;
@@ -1256,8 +1368,8 @@
 
     if (!normal) {
 
-        finishOriginal(
-            "找不到 Normal Stage record"
+        fail(
+            "Normal DailyStage not found"
         );
 
         return;
@@ -1265,12 +1377,12 @@
 
 
     log(
-        `Easy: ${easy.stage}, ${easy.payloadLength} bytes`
+        `Easy   ${easy.stage}`
     );
 
 
     log(
-        `Normal: ${normal.stage}, ${normal.payloadLength} bytes`
+        `Normal ${normal.stage}`
     );
 
 
@@ -1288,25 +1400,21 @@
         );
 
 
-    // ============================================================
-    // 只替换 field2 + field3
-    // ============================================================
-
     let patch;
 
 
     try {
 
         patch =
-            replaceField2And3(
+            buildPatch(
                 easyPayload,
                 normalPayload
             );
 
     } catch (e) {
 
-        finishOriginal(
-            `构造失败: ${e.message}`
+        fail(
+            e.message
         );
 
         return;
@@ -1319,107 +1427,29 @@
     );
 
 
-    // ============================================================
-    // 校验
-    // ============================================================
-
-    try {
-
-        const newEasy =
-            view.subarray(
-                easy.payloadStart,
-                easy.payloadEnd
-            );
+    log(
+        "✅ Patch success"
+    );
 
 
-        const fields =
-            parseFields(
-                newEasy
-            );
+    log(
+        "Copied fields: 2, 3, 7, 12"
+    );
 
 
-        const f1 =
-            getField(
-                newEasy,
-                fields,
-                1
-            );
+    log(
+        `field7  -> ${patch.normalF7}`
+    );
 
 
-        const f2 =
-            getField(
-                newEasy,
-                fields,
-                2
-            );
+    log(
+        `field12 -> ${patch.normalF12}`
+    );
 
 
-        if (
-            asciiString(
-                f1.data
-            ) !== easyId
-        ) {
-
-            throw new Error(
-                "Easy field1 被意外修改"
-            );
-        }
-
-
-        if (
-            asciiString(
-                f2.data
-            ) !== normal.stage
-        ) {
-
-            throw new Error(
-                "field2 未成功替换"
-            );
-        }
-
-
-        log(
-            "✅ Experiment 2 注入成功"
-        );
-
-
-        log(
-            `Easy ID 保持: ${easyId}`
-        );
-
-
-        log(
-            `Stage: ${easy.stage} -> ${normal.stage}`
-        );
-
-
-        log(
-            `只替换 field2 + field3`
-        );
-
-
-        log(
-            `field4+ 继续使用原 Easy`
-        );
-
-
-        log(
-            `Lua padding = ${patch.pad} bytes`
-        );
-
-
-        log(
-            `总 response 长度仍为 ${view.length}`
-        );
-
-    } catch (e) {
-
-        finishOriginal(
-            `校验失败: ${e.message}`
-        );
-
-        return;
-    }
+    log(
+        `Lua padding = ${patch.pad}`
+    );
 
 
     // ============================================================
@@ -1461,10 +1491,6 @@
             view.length
         );
 
-
-    // ============================================================
-    // 返回修改后的本地响应
-    // ============================================================
 
     $done({
         body: view,
