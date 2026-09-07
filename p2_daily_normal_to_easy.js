@@ -1,20 +1,24 @@
 /**
- * Phoenix 2 Daily Stage Injector
- * Experiment: field 2 + 3 + 14
+ * Phoenix 2 Daily Stage Injector - No Padding Experiment
  *
- * Easy 保留所有原 metadata，
- * 仅从 Normal 复制：
+ * 目标：
+ *   Easy 保留自身全部 metadata，只从 Normal 复制：
  *
- *   field 2  = stage ID
- *   field 3  = Lua stage
- *   field 14 = 待验证 metadata
+ *     field 2  = stage ID
+ *     field 3  = Lua stage
+ *     field 14 = title/display metadata
  *
- * field 7 / field 12 不再复制。
+ * 与上一版不同：
+ *   - 不做任何 padding
+ *   - Easy DailyStage 可以自然变长/变短
+ *   - 自动重建 DailyStage wrapper 长度
+ *   - 自动重建顶层 daily collection 长度
+ *   - 自动更新 HTTP Content-Length
  */
 
 (function () {
 
-    const PREFIX = "[P2-F2F3F14]";
+    const PREFIX = "[P2-NoPadding]";
 
     function log(s) {
         console.log(`${PREFIX} ${s}`);
@@ -27,7 +31,7 @@
 
 
     // ============================================================
-    // Binary
+    // Binary helpers
     // ============================================================
 
     function cloneBody(body) {
@@ -92,22 +96,24 @@
     }
 
 
-    function asciiBytes(str) {
+    function asciiBytes(s) {
 
         const out =
             new Uint8Array(
-                str.length
+                s.length
             );
+
 
         for (
             let i = 0;
-            i < str.length;
+            i < s.length;
             i++
         ) {
 
             out[i] =
-                str.charCodeAt(i);
+                s.charCodeAt(i);
         }
+
 
         return out;
     }
@@ -116,6 +122,7 @@
     function asciiString(bytes) {
 
         let s = "";
+
 
         for (
             let i = 0;
@@ -129,6 +136,7 @@
                 );
         }
 
+
         return s;
     }
 
@@ -139,7 +147,8 @@
         from
     ) {
 
-        from = from || 0;
+        from =
+            from || 0;
 
 
         outer:
@@ -175,7 +184,7 @@
     }
 
 
-    function sliceCopy(
+    function copySlice(
         buf,
         start,
         end
@@ -186,12 +195,14 @@
                 end - start
             );
 
+
         out.set(
             buf.subarray(
                 start,
                 end
             )
         );
+
 
         return out;
     }
@@ -240,7 +251,7 @@
 
 
     // ============================================================
-    // Varint
+    // Protobuf varint
     // ============================================================
 
     function readVarint(
@@ -300,6 +311,17 @@
 
     function encodeVarint(value) {
 
+        if (
+            !Number.isSafeInteger(value) ||
+            value < 0
+        ) {
+
+            throw new Error(
+                `bad varint ${value}`
+            );
+        }
+
+
         const arr = [];
 
 
@@ -338,10 +360,10 @@
 
 
     // ============================================================
-    // Protobuf
+    // Generic protobuf parser
     // ============================================================
 
-    function parseFields(message) {
+    function parseFields(msg) {
 
         const fields = [];
 
@@ -349,7 +371,7 @@
 
 
         while (
-            pos < message.length
+            pos < msg.length
         ) {
 
             const start =
@@ -358,7 +380,7 @@
 
             const tagInfo =
                 readVarint(
-                    message,
+                    msg,
                     pos
                 );
 
@@ -366,7 +388,7 @@
             if (!tagInfo) {
 
                 throw new Error(
-                    `bad tag @ ${pos}`
+                    `bad tag @${pos}`
                 );
             }
 
@@ -389,7 +411,7 @@
                 tagInfo.next;
 
 
-            const f = {
+            const field = {
 
                 start,
                 tag,
@@ -408,7 +430,7 @@
 
                 const v =
                     readVarint(
-                        message,
+                        msg,
                         pos
                     );
 
@@ -416,12 +438,12 @@
                 if (!v) {
 
                     throw new Error(
-                        "bad varint"
+                        `bad varint field ${fieldNo}`
                     );
                 }
 
 
-                f.value =
+                field.value =
                     v.value;
 
 
@@ -444,7 +466,7 @@
 
                 const lenInfo =
                     readVarint(
-                        message,
+                        msg,
                         pos
                     );
 
@@ -452,7 +474,7 @@
                 if (!lenInfo) {
 
                     throw new Error(
-                        "bad length"
+                        `bad length field ${fieldNo}`
                     );
                 }
 
@@ -461,21 +483,21 @@
                     lenInfo.next;
 
 
-                f.length =
+                field.length =
                     lenInfo.value;
 
 
-                f.dataStart =
+                field.dataStart =
                     pos;
 
 
-                f.dataEnd =
+                field.dataEnd =
                     pos +
-                    f.length;
+                    field.length;
 
 
                 pos =
-                    f.dataEnd;
+                    field.dataEnd;
             }
 
 
@@ -490,27 +512,29 @@
             else {
 
                 throw new Error(
-                    `wire ${wire}`
+                    `unsupported wire ${wire}`
                 );
             }
 
 
             if (
                 pos >
-                message.length
+                msg.length
             ) {
 
                 throw new Error(
-                    "field overflow"
+                    `field ${fieldNo} overflow`
                 );
             }
 
 
-            f.end =
+            field.end =
                 pos;
 
 
-            fields.push(f);
+            fields.push(
+                field
+            );
         }
 
 
@@ -519,7 +543,7 @@
 
 
     function getField(
-        message,
+        msg,
         fields,
         fieldNo,
         wire
@@ -542,7 +566,7 @@
                     field: f,
 
                     raw:
-                        message.subarray(
+                        msg.subarray(
                             f.start,
                             f.end
                         ),
@@ -550,7 +574,7 @@
                     data:
                         f.wire === 2
                             ?
-                            message.subarray(
+                            msg.subarray(
                                 f.dataStart,
                                 f.dataEnd
                             )
@@ -566,7 +590,7 @@
 
 
     // ============================================================
-    // Locate actual DailyStage
+    // Locate real DailyStage
     // ============================================================
 
     function locateDailyStage(
@@ -581,6 +605,7 @@
 
 
         let from = 0;
+
 
         const candidates = [];
 
@@ -607,14 +632,17 @@
                 idPos + 1;
 
 
+            // ----------------------------------------------------
+            // Find DailyStage payload start
+            //
+            // field 1:
+            // 0A <length> "daily-..."
+            // ----------------------------------------------------
+
             let payloadStart =
                 -1;
 
 
-            // field1:
-            //
-            // 0A length "daily..."
-            //
             for (
                 let p =
                     Math.max(
@@ -628,7 +656,8 @@
             ) {
 
                 if (
-                    buf[p] !== 0x0a
+                    buf[p] !==
+                    0x0a
                 ) {
 
                     continue;
@@ -644,17 +673,9 @@
 
 
                 if (
-                    !lenInfo
-                ) {
-
-                    continue;
-                }
-
-
-                if (
+                    lenInfo &&
                     lenInfo.next ===
                         idPos &&
-
                     lenInfo.value ===
                         idBytes.length
                 ) {
@@ -675,12 +696,19 @@
             }
 
 
-            // 找 outer wrapper
-            let payloadLength =
+            // ----------------------------------------------------
+            // Find repeated DailyStage wrapper
+            // ----------------------------------------------------
+
+            let outerStart =
                 -1;
 
 
-            let outerStart =
+            let outerTag =
+                -1;
+
+
+            let payloadLength =
                 -1;
 
 
@@ -746,6 +774,10 @@
 
                 outerStart =
                     p;
+
+
+                outerTag =
+                    tagInfo.value;
 
 
                 payloadLength =
@@ -821,7 +853,8 @@
                 if (
                     asciiString(
                         f1.data
-                    ) !== identifier
+                    ) !==
+                    identifier
                 ) {
 
                     continue;
@@ -844,7 +877,6 @@
                 }
 
 
-                // 真正的 stage Lua
                 if (
                     f3.data.length <
                     10000
@@ -870,8 +902,17 @@
 
                 candidates.push({
 
+                    outerStart,
+
+                    outerTag,
+
                     payloadStart,
+
                     payloadEnd,
+
+                    outerEnd:
+                        payloadEnd,
+
                     payloadLength,
 
                     stage,
@@ -907,17 +948,19 @@
 
 
     // ============================================================
-    // Build patched Easy
+    // Build new Easy payload
+    //
+    // NO PADDING
     //
     // Easy:
     //   field 1  <- Easy
     //   field 2  <- Normal
     //   field 3  <- Normal
     //   field 14 <- Normal
-    //   everything else <- Easy
+    //   all other fields <- Easy
     // ============================================================
 
-    function buildPatch(
+    function buildEasyPayload(
         easyPayload,
         normalPayload
     ) {
@@ -968,197 +1011,15 @@
         ) {
 
             throw new Error(
-                "Normal missing f2/f3/f14"
+                "Normal missing field2/3/14"
             );
         }
-
-
-        let fixedLength = 0;
 
 
         let countF2 = 0;
         let countF3 = 0;
         let countF14 = 0;
 
-
-        // ========================================================
-        // Calculate final length excluding field3
-        // ========================================================
-
-        for (
-            const f of easyFields
-        ) {
-
-            if (
-                f.fieldNo === 2 &&
-                f.wire === 2
-            ) {
-
-                countF2++;
-
-
-                fixedLength +=
-                    encodeVarint(
-                        f.tag
-                    ).length;
-
-
-                fixedLength +=
-                    encodeVarint(
-                        normalF2.data.length
-                    ).length;
-
-
-                fixedLength +=
-                    normalF2.data.length;
-            }
-
-
-            else if (
-                f.fieldNo === 3 &&
-                f.wire === 2
-            ) {
-
-                countF3++;
-            }
-
-
-            else if (
-                f.fieldNo === 14 &&
-                f.wire === 2
-            ) {
-
-                countF14++;
-
-
-                // 直接复制整个 Normal field14
-                fixedLength +=
-                    normalF14.raw.length;
-            }
-
-
-            else {
-
-                fixedLength +=
-                    f.end -
-                    f.start;
-            }
-        }
-
-
-        if (
-            countF2 !== 1 ||
-            countF3 !== 1 ||
-            countF14 !== 1
-        ) {
-
-            throw new Error(
-                `unexpected fields: ` +
-                `f2=${countF2}, ` +
-                `f3=${countF3}, ` +
-                `f14=${countF14}`
-            );
-        }
-
-
-        const script =
-            normalF3.data;
-
-
-        const field3Tag =
-            encodeVarint(
-                normalF3.field.tag
-            );
-
-
-        const targetLength =
-            easyPayload.length;
-
-
-        // ========================================================
-        // Padding
-        // ========================================================
-
-        let pad =
-            Math.max(
-                0,
-
-                targetLength -
-
-                fixedLength -
-
-                field3Tag.length -
-
-                encodeVarint(
-                    script.length
-                ).length -
-
-                script.length
-            );
-
-
-        for (
-            let i = 0;
-            i < 8;
-            i++
-        ) {
-
-            const lenVarint =
-                encodeVarint(
-                    script.length +
-                    pad
-                ).length;
-
-
-            const nextPad =
-                targetLength -
-
-                fixedLength -
-
-                field3Tag.length -
-
-                lenVarint -
-
-                script.length;
-
-
-            if (
-                nextPad === pad
-            ) {
-
-                break;
-            }
-
-
-            pad =
-                nextPad;
-        }
-
-
-        if (
-            pad < 0
-        ) {
-
-            throw new Error(
-                `payload too large by ${-pad}`
-            );
-        }
-
-
-        const spaces =
-            new Uint8Array(
-                pad
-            );
-
-
-        spaces.fill(
-            0x20
-        );
-
-
-        // ========================================================
-        // Rebuild
-        // ========================================================
 
         const parts = [];
 
@@ -1168,13 +1029,16 @@
         ) {
 
             // ----------------------------------------------------
-            // field 2 <- Normal
+            // field 2 <- Normal stage ID
             // ----------------------------------------------------
 
             if (
                 f.fieldNo === 2 &&
                 f.wire === 2
             ) {
+
+                countF2++;
+
 
                 parts.push(
                     encodeVarint(
@@ -1197,7 +1061,7 @@
 
 
             // ----------------------------------------------------
-            // field 3 <- Normal
+            // field 3 <- Normal Lua
             // ----------------------------------------------------
 
             else if (
@@ -1205,9 +1069,7 @@
                 f.wire === 2
             ) {
 
-                const newLuaLength =
-                    script.length +
-                    pad;
+                countF3++;
 
 
                 parts.push(
@@ -1219,29 +1081,19 @@
 
                 parts.push(
                     encodeVarint(
-                        newLuaLength
+                        normalF3.data.length
                     )
                 );
 
 
                 parts.push(
-                    script
+                    normalF3.data
                 );
-
-
-                if (
-                    pad > 0
-                ) {
-
-                    parts.push(
-                        spaces
-                    );
-                }
             }
 
 
             // ----------------------------------------------------
-            // field 14 <- Normal
+            // field 14 <- Normal title metadata
             // ----------------------------------------------------
 
             else if (
@@ -1249,20 +1101,37 @@
                 f.wire === 2
             ) {
 
+                countF14++;
+
+
                 parts.push(
-                    normalF14.raw
+                    encodeVarint(
+                        f.tag
+                    )
+                );
+
+
+                parts.push(
+                    encodeVarint(
+                        normalF14.data.length
+                    )
+                );
+
+
+                parts.push(
+                    normalF14.data
                 );
             }
 
 
             // ----------------------------------------------------
-            // everything else <- Easy
+            // Everything else stays Easy
             // ----------------------------------------------------
 
             else {
 
                 parts.push(
-                    sliceCopy(
+                    copySlice(
                         easyPayload,
                         f.start,
                         f.end
@@ -1272,45 +1141,205 @@
         }
 
 
-        const rebuilt =
-            concat(
-                parts
-            );
-
-
         if (
-            rebuilt.length !==
-            targetLength
+            countF2 !== 1 ||
+            countF3 !== 1 ||
+            countF14 !== 1
         ) {
 
             throw new Error(
-                `length mismatch ` +
-                `${rebuilt.length} != ` +
-                `${targetLength}`
+                `unexpected Easy fields: ` +
+                `f2=${countF2}, ` +
+                `f3=${countF3}, ` +
+                `f14=${countF14}`
             );
         }
 
 
-        return {
+        return concat(
+            parts
+        );
+    }
 
-            rebuilt,
-            pad,
 
-            f14:
-                Array.from(
-                    normalF14.data
-                )
-                .map(
-                    x =>
-                        x
-                        .toString(16)
-                        .padStart(
-                            2,
-                            "0"
-                        )
-                )
-                .join(" ")
-        };
+    // ============================================================
+    // Parse top-level protobuf
+    //
+    // Find the length-delimited root field that contains
+    // Easy + Normal DailyStage records.
+    // ============================================================
+
+    function findTopLevelContainer(
+        buf,
+        childStart,
+        childEnd
+    ) {
+
+        let pos = 0;
+
+
+        while (
+            pos < buf.length
+        ) {
+
+            const start =
+                pos;
+
+
+            const tagInfo =
+                readVarint(
+                    buf,
+                    pos
+                );
+
+
+            if (!tagInfo) {
+
+                throw new Error(
+                    `bad root tag @${pos}`
+                );
+            }
+
+
+            const tag =
+                tagInfo.value;
+
+
+            const wire =
+                tag & 7;
+
+
+            pos =
+                tagInfo.next;
+
+
+            let dataStart =
+                null;
+
+
+            let dataEnd =
+                null;
+
+
+            if (
+                wire === 0
+            ) {
+
+                const v =
+                    readVarint(
+                        buf,
+                        pos
+                    );
+
+
+                if (!v) {
+
+                    throw new Error(
+                        "bad root varint"
+                    );
+                }
+
+
+                pos =
+                    v.next;
+            }
+
+
+            else if (
+                wire === 1
+            ) {
+
+                pos += 8;
+            }
+
+
+            else if (
+                wire === 2
+            ) {
+
+                const lenInfo =
+                    readVarint(
+                        buf,
+                        pos
+                    );
+
+
+                if (!lenInfo) {
+
+                    throw new Error(
+                        "bad root length"
+                    );
+                }
+
+
+                dataStart =
+                    lenInfo.next;
+
+
+                dataEnd =
+                    dataStart +
+                    lenInfo.value;
+
+
+                pos =
+                    dataEnd;
+            }
+
+
+            else if (
+                wire === 5
+            ) {
+
+                pos += 4;
+            }
+
+
+            else {
+
+                throw new Error(
+                    `unsupported root wire ${wire}`
+                );
+            }
+
+
+            if (
+                pos >
+                buf.length
+            ) {
+
+                throw new Error(
+                    "root field overflow"
+                );
+            }
+
+
+            // Does this top-level field contain our DailyStages?
+            if (
+                wire === 2 &&
+                dataStart <=
+                    childStart &&
+                dataEnd >=
+                    childEnd
+            ) {
+
+                return {
+
+                    start,
+
+                    tag,
+
+                    dataStart,
+
+                    dataEnd,
+
+                    end:
+                        pos
+                };
+            }
+        }
+
+
+        return null;
     }
 
 
@@ -1318,35 +1347,26 @@
     // MAIN
     // ============================================================
 
-    const body =
-        $response.body;
-
-
-    if (!body) {
-
-        fail(
-            "missing body"
-        );
-
-        return;
-    }
-
-
     const view =
         cloneBody(
-            body
+            $response.body
         );
 
 
     if (!view) {
 
         fail(
-            "body is not binary"
+            "binary response body unavailable; " +
+            "use binary-body-mode=true"
         );
 
         return;
     }
 
+
+    // ============================================================
+    // Auto detect daily number
+    // ============================================================
 
     const prefix =
         "daily-commander/easy-";
@@ -1401,7 +1421,7 @@
     if (!number) {
 
         fail(
-            "Daily number not found"
+            "daily number parse failed"
         );
 
         return;
@@ -1416,10 +1436,9 @@
         `daily-commander/normal-${number}`;
 
 
-    log(
-        `Daily ${number}`
-    );
-
+    // ============================================================
+    // Locate Easy + Normal
+    // ============================================================
 
     const easy =
         locateDailyStage(
@@ -1435,20 +1454,13 @@
         );
 
 
-    if (!easy) {
+    if (
+        !easy ||
+        !normal
+    ) {
 
         fail(
-            "Easy stage not found"
-        );
-
-        return;
-    }
-
-
-    if (!normal) {
-
-        fail(
-            "Normal stage not found"
+            "Easy/Normal real DailyStage not found"
         );
 
         return;
@@ -1456,12 +1468,19 @@
 
 
     log(
-        `Easy   = ${easy.stage}`
+        `Daily ${number}`
     );
 
 
     log(
-        `Normal = ${normal.stage}`
+        `Easy   ${easy.stage}, ` +
+        `payload=${easy.payloadLength}`
+    );
+
+
+    log(
+        `Normal ${normal.stage}, ` +
+        `payload=${normal.payloadLength}`
     );
 
 
@@ -1479,13 +1498,17 @@
         );
 
 
-    let patch;
+    // ============================================================
+    // Build new variable-length Easy payload
+    // ============================================================
+
+    let newEasyPayload;
 
 
     try {
 
-        patch =
-            buildPatch(
+        newEasyPayload =
+            buildEasyPayload(
                 easyPayload,
                 normalPayload
             );
@@ -1495,36 +1518,248 @@
     catch (e) {
 
         fail(
-            e.message
+            `build Easy failed: ${e.message}`
         );
 
         return;
     }
 
 
-    view.set(
-        patch.rebuilt,
-        easy.payloadStart
+    // ============================================================
+    // Rebuild repeated DailyStage wrapper
+    //
+    // <tag>
+    // <NEW LENGTH>
+    // <new payload>
+    // ============================================================
+
+    const newEasyWrapper =
+        concat([
+
+            encodeVarint(
+                easy.outerTag
+            ),
+
+            encodeVarint(
+                newEasyPayload.length
+            ),
+
+            newEasyPayload
+        ]);
+
+
+    // ============================================================
+    // Locate top-level daily collection
+    // ============================================================
+
+    let container;
+
+
+    try {
+
+        container =
+            findTopLevelContainer(
+                view,
+                easy.outerStart,
+                normal.outerEnd
+            );
+
+    }
+
+    catch (e) {
+
+        fail(
+            `root parse failed: ${e.message}`
+        );
+
+        return;
+    }
+
+
+    if (!container) {
+
+        fail(
+            "top-level Daily collection not found"
+        );
+
+        return;
+    }
+
+
+    const oldContainerPayload =
+        view.subarray(
+            container.dataStart,
+            container.dataEnd
+        );
+
+
+    const relativeEasyStart =
+        easy.outerStart -
+        container.dataStart;
+
+
+    const relativeEasyEnd =
+        easy.outerEnd -
+        container.dataStart;
+
+
+    if (
+        relativeEasyStart < 0 ||
+        relativeEasyEnd >
+            oldContainerPayload.length ||
+        relativeEasyStart >=
+            relativeEasyEnd
+    ) {
+
+        fail(
+            "Easy wrapper boundary invalid"
+        );
+
+        return;
+    }
+
+
+    // ============================================================
+    // Rebuild Daily collection
+    //
+    // before Easy
+    // +
+    // new Easy wrapper
+    // +
+    // after Easy
+    // ============================================================
+
+    const newContainerPayload =
+        concat([
+
+            copySlice(
+                oldContainerPayload,
+                0,
+                relativeEasyStart
+            ),
+
+            newEasyWrapper,
+
+            copySlice(
+                oldContainerPayload,
+                relativeEasyEnd,
+                oldContainerPayload.length
+            )
+        ]);
+
+
+    // ============================================================
+    // Rebuild top-level collection field
+    // ============================================================
+
+    const newContainerField =
+        concat([
+
+            encodeVarint(
+                container.tag
+            ),
+
+            encodeVarint(
+                newContainerPayload.length
+            ),
+
+            newContainerPayload
+        ]);
+
+
+    // ============================================================
+    // Rebuild entire HTTP body
+    // ============================================================
+
+    const finalBody =
+        concat([
+
+            copySlice(
+                view,
+                0,
+                container.start
+            ),
+
+            newContainerField,
+
+            copySlice(
+                view,
+                container.end,
+                view.length
+            )
+        ]);
+
+
+    // ============================================================
+    // Sanity check
+    // ============================================================
+
+    const patchedEasy =
+        locateDailyStage(
+            finalBody,
+            easyId
+        );
+
+
+    if (!patchedEasy) {
+
+        fail(
+            "sanity: rebuilt Easy not found"
+        );
+
+        return;
+    }
+
+
+    if (
+        patchedEasy.stage !==
+        normal.stage
+    ) {
+
+        fail(
+            `sanity stage mismatch: ` +
+            `${patchedEasy.stage} != ` +
+            `${normal.stage}`
+        );
+
+        return;
+    }
+
+
+    log(
+        "✅ no-padding rebuild success"
     );
 
 
     log(
-        "✅ patch success"
+        "copied fields: 2 + 3 + 14 only"
     );
 
 
     log(
-        "copied fields: 2 + 3 + 14"
+        `Easy payload: ` +
+        `${easy.payloadLength} -> ` +
+        `${newEasyPayload.length}`
     );
 
 
     log(
-        `Normal field14 = ${patch.f14}`
+        `Daily collection: ` +
+        `${oldContainerPayload.length} -> ` +
+        `${newContainerPayload.length}`
     );
 
 
     log(
-        `Lua padding = ${patch.pad}`
+        `HTTP body: ` +
+        `${view.length} -> ` +
+        `${finalBody.length}`
+    );
+
+
+    log(
+        `delta = ` +
+        `${finalBody.length - view.length} bytes`
     );
 
 
@@ -1564,13 +1799,21 @@
         "Content-Length"
     ] =
         String(
-            view.length
+            finalBody.length
         );
 
 
+    // ============================================================
+    // Return modified response
+    // ============================================================
+
     $done({
-        body: view,
-        headers
+
+        body:
+            finalBody,
+
+        headers:
+            headers
     });
 
 })();
