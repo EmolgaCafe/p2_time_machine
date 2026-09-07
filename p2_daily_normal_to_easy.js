@@ -1,58 +1,63 @@
 /**
- * Phoenix 2 Daily Stage Injector - Experiment 3
+ * Phoenix 2 Daily Stage Injector
+ * Experiment: field 2 + 3 + 14
  *
- * 实验目标：
- *   Easy 保留自身绝大多数 metadata，
- *   只从 Normal 复制：
+ * Easy 保留所有原 metadata，
+ * 仅从 Normal 复制：
  *
- *     field 2  = stage ID
- *     field 3  = Lua stage
- *     field 7  = difficulty/category-like metadata
- *     field 12 = title/template-like metadata
+ *   field 2  = stage ID
+ *   field 3  = Lua stage
+ *   field 14 = 待验证 metadata
  *
- * 其它：
- *     field 1   = Easy
- *     field 4-6 = Easy
- *     field 8+  = Easy
- *     field 14  = Easy
- *     field 19  = Easy
- *
- * 仍使用 Lua trailing spaces 保持 Easy payload 长度不变。
+ * field 7 / field 12 不再复制。
  */
 
 (function () {
 
-    const PREFIX = "[P2-Field23712-Test]";
+    const PREFIX = "[P2-F2F3F14]";
 
-    function log(msg) {
-        console.log(`${PREFIX} ${msg}`);
+    function log(s) {
+        console.log(`${PREFIX} ${s}`);
     }
 
-    function fail(msg) {
-        log(`❌ ${msg}`);
+    function fail(s) {
+        log(`❌ ${s}`);
         $done({});
     }
 
+
     // ============================================================
-    // Binary helpers
+    // Binary
     // ============================================================
 
     function cloneBody(body) {
 
         if (body instanceof Uint8Array) {
-            const out = new Uint8Array(body.byteLength);
+
+            const out =
+                new Uint8Array(
+                    body.byteLength
+                );
+
             out.set(body);
+
             return out;
         }
 
+
         if (body instanceof ArrayBuffer) {
-            return new Uint8Array(body.slice(0));
+
+            return new Uint8Array(
+                body.slice(0)
+            );
         }
+
 
         if (
             body &&
             body.buffer instanceof ArrayBuffer
         ) {
+
             const offset =
                 body.byteOffset || 0;
 
@@ -63,6 +68,7 @@
                     offset
                 );
 
+
             const src =
                 new Uint8Array(
                     body.buffer,
@@ -70,13 +76,17 @@
                     length
                 );
 
+
             const out =
-                new Uint8Array(src.length);
+                new Uint8Array(
+                    src.length
+                );
 
             out.set(src);
 
             return out;
         }
+
 
         return null;
     }
@@ -85,13 +95,16 @@
     function asciiBytes(str) {
 
         const out =
-            new Uint8Array(str.length);
+            new Uint8Array(
+                str.length
+            );
 
         for (
             let i = 0;
             i < str.length;
             i++
         ) {
+
             out[i] =
                 str.charCodeAt(i);
         }
@@ -109,6 +122,7 @@
             i < bytes.length;
             i++
         ) {
+
             s +=
                 String.fromCharCode(
                     bytes[i]
@@ -126,6 +140,7 @@
     ) {
 
         from = from || 0;
+
 
         outer:
         for (
@@ -146,12 +161,15 @@
                     buf[i + j] !==
                     needle[j]
                 ) {
+
                     continue outer;
                 }
             }
 
+
             return i;
         }
+
 
         return -1;
     }
@@ -183,34 +201,46 @@
 
         let total = 0;
 
+
         for (
             const p of parts
         ) {
-            total += p.length;
+
+            total +=
+                p.length;
         }
 
+
         const out =
-            new Uint8Array(total);
+            new Uint8Array(
+                total
+            );
+
 
         let offset = 0;
 
+
         for (
             const p of parts
         ) {
+
             out.set(
                 p,
                 offset
             );
 
-            offset += p.length;
+
+            offset +=
+                p.length;
         }
+
 
         return out;
     }
 
 
     // ============================================================
-    // Protobuf varint
+    // Varint
     // ============================================================
 
     function readVarint(
@@ -222,12 +252,15 @@
         if (
             limit === undefined
         ) {
+
             limit =
                 buf.length;
         }
 
+
         let value = 0;
         let shift = 0;
+
 
         while (
             pos < limit &&
@@ -237,6 +270,7 @@
             const b =
                 buf[pos++];
 
+
             value +=
                 (b & 0x7f) *
                 Math.pow(
@@ -244,17 +278,21 @@
                     shift
                 );
 
+
             if (
                 (b & 0x80) === 0
             ) {
+
                 return {
                     value,
                     next: pos
                 };
             }
 
+
             shift += 7;
         }
+
 
         return null;
     }
@@ -262,38 +300,45 @@
 
     function encodeVarint(value) {
 
-        const bytes = [];
+        const arr = [];
+
 
         do {
 
             let b =
                 value % 128;
 
+
             value =
                 Math.floor(
                     value / 128
                 );
 
+
             if (
                 value > 0
             ) {
+
                 b |= 0x80;
             }
 
-            bytes.push(b);
+
+            arr.push(b);
+
 
         } while (
             value > 0
         );
 
+
         return new Uint8Array(
-            bytes
+            arr
         );
     }
 
 
     // ============================================================
-    // Protobuf parser
+    // Protobuf
     // ============================================================
 
     function parseFields(message) {
@@ -302,11 +347,14 @@
 
         let pos = 0;
 
+
         while (
             pos < message.length
         ) {
 
-            const start = pos;
+            const start =
+                pos;
+
 
             const tagInfo =
                 readVarint(
@@ -314,31 +362,40 @@
                     pos
                 );
 
+
             if (!tagInfo) {
+
                 throw new Error(
-                    "bad protobuf tag"
+                    `bad tag @ ${pos}`
                 );
             }
 
+
             const tag =
                 tagInfo.value;
+
 
             const fieldNo =
                 Math.floor(
                     tag / 8
                 );
 
+
             const wire =
                 tag & 7;
+
 
             pos =
                 tagInfo.next;
 
-            const field = {
+
+            const f = {
+
                 start,
                 tag,
                 fieldNo,
                 wire,
+
                 dataStart: null,
                 dataEnd: null,
                 end: null
@@ -355,18 +412,23 @@
                         pos
                     );
 
+
                 if (!v) {
+
                     throw new Error(
-                        "bad varint field"
+                        "bad varint"
                     );
                 }
 
-                field.value =
+
+                f.value =
                     v.value;
+
 
                 pos =
                     v.next;
             }
+
 
             else if (
                 wire === 1
@@ -374,6 +436,7 @@
 
                 pos += 8;
             }
+
 
             else if (
                 wire === 2
@@ -385,28 +448,36 @@
                         pos
                     );
 
+
                 if (!lenInfo) {
+
                     throw new Error(
-                        "bad length field"
+                        "bad length"
                     );
                 }
+
 
                 pos =
                     lenInfo.next;
 
-                field.length =
+
+                f.length =
                     lenInfo.value;
 
-                field.dataStart =
+
+                f.dataStart =
                     pos;
 
-                field.dataEnd =
+
+                f.dataEnd =
                     pos +
-                    field.length;
+                    f.length;
+
 
                 pos =
-                    field.dataEnd;
+                    f.dataEnd;
             }
+
 
             else if (
                 wire === 5
@@ -415,10 +486,11 @@
                 pos += 4;
             }
 
+
             else {
 
                 throw new Error(
-                    `unsupported wire ${wire}`
+                    `wire ${wire}`
                 );
             }
 
@@ -427,27 +499,30 @@
                 pos >
                 message.length
             ) {
+
                 throw new Error(
-                    "field exceeds payload"
+                    "field overflow"
                 );
             }
 
-            field.end =
+
+            f.end =
                 pos;
 
-            fields.push(
-                field
-            );
+
+            fields.push(f);
         }
+
 
         return fields;
     }
 
 
-    function getLengthField(
+    function getField(
         message,
         fields,
-        fieldNo
+        fieldNo,
+        wire
     ) {
 
         for (
@@ -455,51 +530,43 @@
         ) {
 
             if (
-                f.fieldNo ===
-                    fieldNo &&
-                f.wire === 2
+                f.fieldNo === fieldNo &&
+                (
+                    wire === undefined ||
+                    f.wire === wire
+                )
             ) {
 
                 return {
+
                     field: f,
-                    data:
+
+                    raw:
                         message.subarray(
-                            f.dataStart,
-                            f.dataEnd
-                        )
+                            f.start,
+                            f.end
+                        ),
+
+                    data:
+                        f.wire === 2
+                            ?
+                            message.subarray(
+                                f.dataStart,
+                                f.dataEnd
+                            )
+                            :
+                            null
                 };
             }
         }
 
-        return null;
-    }
-
-
-    function getVarintField(
-        fields,
-        fieldNo
-    ) {
-
-        for (
-            const f of fields
-        ) {
-
-            if (
-                f.fieldNo ===
-                    fieldNo &&
-                f.wire === 0
-            ) {
-
-                return f;
-            }
-        }
 
         return null;
     }
 
 
     // ============================================================
-    // Locate real DailyStage
+    // Locate actual DailyStage
     // ============================================================
 
     function locateDailyStage(
@@ -512,9 +579,11 @@
                 identifier
             );
 
+
         let from = 0;
 
         const candidates = [];
+
 
         while (true) {
 
@@ -525,11 +594,14 @@
                     from
                 );
 
+
             if (
                 idPos < 0
             ) {
+
                 break;
             }
+
 
             from =
                 idPos + 1;
@@ -539,22 +611,29 @@
                 -1;
 
 
+            // field1:
+            //
+            // 0A length "daily..."
+            //
             for (
                 let p =
                     Math.max(
                         0,
                         idPos - 6
                     );
+
                 p < idPos;
+
                 p++
             ) {
 
                 if (
-                    buf[p] !==
-                    0x0a
+                    buf[p] !== 0x0a
                 ) {
+
                     continue;
                 }
+
 
                 const lenInfo =
                     readVarint(
@@ -563,15 +642,19 @@
                         idPos
                     );
 
+
                 if (
                     !lenInfo
                 ) {
+
                     continue;
                 }
+
 
                 if (
                     lenInfo.next ===
                         idPos &&
+
                     lenInfo.value ===
                         idBytes.length
                 ) {
@@ -587,14 +670,17 @@
             if (
                 payloadStart < 0
             ) {
+
                 continue;
             }
 
 
-            let outerStart =
+            // 找 outer wrapper
+            let payloadLength =
                 -1;
 
-            let payloadLength =
+
+            let outerStart =
                 -1;
 
 
@@ -604,8 +690,9 @@
                         0,
                         payloadStart - 8
                     );
-                p <
-                    payloadStart;
+
+                p < payloadStart;
+
                 p++
             ) {
 
@@ -616,6 +703,7 @@
                         payloadStart
                     );
 
+
                 if (
                     !tagInfo ||
                     (
@@ -623,8 +711,10 @@
                         7
                     ) !== 2
                 ) {
+
                     continue;
                 }
+
 
                 const lenInfo =
                     readVarint(
@@ -633,24 +723,30 @@
                         payloadStart
                     );
 
+
                 if (
                     !lenInfo ||
                     lenInfo.next !==
                         payloadStart
                 ) {
+
                     continue;
                 }
+
 
                 if (
                     payloadStart +
                         lenInfo.value >
                     buf.length
                 ) {
+
                     continue;
                 }
 
+
                 outerStart =
                     p;
+
 
                 payloadLength =
                     lenInfo.value;
@@ -660,6 +756,7 @@
             if (
                 outerStart < 0
             ) {
+
                 continue;
             }
 
@@ -685,26 +782,29 @@
 
 
                 const f1 =
-                    getLengthField(
+                    getField(
                         payload,
                         fields,
-                        1
+                        1,
+                        2
                     );
 
 
                 const f2 =
-                    getLengthField(
+                    getField(
                         payload,
                         fields,
+                        2,
                         2
                     );
 
 
                 const f3 =
-                    getLengthField(
+                    getField(
                         payload,
                         fields,
-                        3
+                        3,
+                        2
                     );
 
 
@@ -713,6 +813,7 @@
                     !f2 ||
                     !f3
                 ) {
+
                     continue;
                 }
 
@@ -720,9 +821,9 @@
                 if (
                     asciiString(
                         f1.data
-                    ) !==
-                    identifier
+                    ) !== identifier
                 ) {
+
                     continue;
                 }
 
@@ -738,14 +839,17 @@
                         "stage."
                     ) !== 0
                 ) {
+
                     continue;
                 }
 
 
+                // 真正的 stage Lua
                 if (
                     f3.data.length <
                     10000
                 ) {
+
                     continue;
                 }
 
@@ -759,18 +863,23 @@
                         0
                     ) < 0
                 ) {
+
                     continue;
                 }
 
 
                 candidates.push({
+
                     payloadStart,
                     payloadEnd,
                     payloadLength,
+
                     stage,
+
                     luaLength:
                         f3.data.length
                 });
+
 
             } catch (e) {
 
@@ -781,6 +890,7 @@
         if (
             candidates.length === 0
         ) {
+
             return null;
         }
 
@@ -797,16 +907,14 @@
 
 
     // ============================================================
-    // Build:
+    // Build patched Easy
     //
-    // Easy
-    //
-    // +
-    //
-    // Normal field 2
-    // Normal field 3
-    // Normal field 7
-    // Normal field 12
+    // Easy:
+    //   field 1  <- Easy
+    //   field 2  <- Normal
+    //   field 3  <- Normal
+    //   field 14 <- Normal
+    //   everything else <- Easy
     // ============================================================
 
     function buildPatch(
@@ -819,6 +927,7 @@
                 easyPayload
             );
 
+
         const normalFields =
             parseFields(
                 normalPayload
@@ -826,90 +935,55 @@
 
 
         const normalF2 =
-            getLengthField(
+            getField(
                 normalPayload,
                 normalFields,
+                2,
                 2
             );
 
 
         const normalF3 =
-            getLengthField(
+            getField(
                 normalPayload,
                 normalFields,
-                3
+                3,
+                2
             );
 
 
-        const normalF7 =
-            getVarintField(
+        const normalF14 =
+            getField(
+                normalPayload,
                 normalFields,
-                7
-            );
-
-
-        const normalF12 =
-            getVarintField(
-                normalFields,
-                12
+                14,
+                2
             );
 
 
         if (
             !normalF2 ||
             !normalF3 ||
-            !normalF7 ||
-            !normalF12
+            !normalF14
         ) {
+
             throw new Error(
-                "Normal missing required fields"
+                "Normal missing f2/f3/f14"
             );
         }
 
 
-        // ========================================================
-        // 预构造 Normal field7
-        // ========================================================
-
-        const field7Bytes =
-            concat([
-                encodeVarint(
-                    normalF7.tag
-                ),
-
-                encodeVarint(
-                    normalF7.value
-                )
-            ]);
-
-
-        // ========================================================
-        // 预构造 Normal field12
-        // ========================================================
-
-        const field12Bytes =
-            concat([
-                encodeVarint(
-                    normalF12.tag
-                ),
-
-                encodeVarint(
-                    normalF12.value
-                )
-            ]);
-
-
-        // ========================================================
-        // 计算除 field3 外长度
-        // ========================================================
-
         let fixedLength = 0;
 
-        let foundF2 = 0;
-        let foundF3 = 0;
-        let foundF7 = 0;
-        let foundF12 = 0;
 
+        let countF2 = 0;
+        let countF3 = 0;
+        let countF14 = 0;
+
+
+        // ========================================================
+        // Calculate final length excluding field3
+        // ========================================================
 
         for (
             const f of easyFields
@@ -920,51 +994,48 @@
                 f.wire === 2
             ) {
 
-                foundF2++;
+                countF2++;
+
 
                 fixedLength +=
                     encodeVarint(
                         f.tag
                     ).length;
 
+
                 fixedLength +=
                     encodeVarint(
                         normalF2.data.length
                     ).length;
 
+
                 fixedLength +=
                     normalF2.data.length;
             }
+
 
             else if (
                 f.fieldNo === 3 &&
                 f.wire === 2
             ) {
 
-                foundF3++;
+                countF3++;
             }
+
 
             else if (
-                f.fieldNo === 7 &&
-                f.wire === 0
+                f.fieldNo === 14 &&
+                f.wire === 2
             ) {
 
-                foundF7++;
+                countF14++;
 
+
+                // 直接复制整个 Normal field14
                 fixedLength +=
-                    field7Bytes.length;
+                    normalF14.raw.length;
             }
 
-            else if (
-                f.fieldNo === 12 &&
-                f.wire === 0
-            ) {
-
-                foundF12++;
-
-                fixedLength +=
-                    field12Bytes.length;
-            }
 
             else {
 
@@ -976,14 +1047,16 @@
 
 
         if (
-            foundF2 !== 1 ||
-            foundF3 !== 1 ||
-            foundF7 !== 1 ||
-            foundF12 !== 1
+            countF2 !== 1 ||
+            countF3 !== 1 ||
+            countF14 !== 1
         ) {
 
             throw new Error(
-                "unexpected Easy field structure"
+                `unexpected fields: ` +
+                `f2=${countF2}, ` +
+                `f3=${countF3}, ` +
+                `f14=${countF14}`
             );
         }
 
@@ -1011,12 +1084,16 @@
                 0,
 
                 targetLength -
-                    fixedLength -
-                    field3Tag.length -
-                    encodeVarint(
-                        script.length
-                    ).length -
+
+                fixedLength -
+
+                field3Tag.length -
+
+                encodeVarint(
                     script.length
+                ).length -
+
+                script.length
             );
 
 
@@ -1026,30 +1103,35 @@
             i++
         ) {
 
-            const newLenBytes =
+            const lenVarint =
                 encodeVarint(
                     script.length +
                     pad
                 ).length;
 
 
-            const newPad =
+            const nextPad =
                 targetLength -
+
                 fixedLength -
+
                 field3Tag.length -
-                newLenBytes -
+
+                lenVarint -
+
                 script.length;
 
 
             if (
-                newPad === pad
+                nextPad === pad
             ) {
+
                 break;
             }
 
 
             pad =
-                newPad;
+                nextPad;
         }
 
 
@@ -1058,7 +1140,7 @@
         ) {
 
             throw new Error(
-                `payload too large by ${-pad} bytes`
+                `payload too large by ${-pad}`
             );
         }
 
@@ -1085,9 +1167,9 @@
             const f of easyFields
         ) {
 
-            // -------------------------
-            // field2 <- Normal
-            // -------------------------
+            // ----------------------------------------------------
+            // field 2 <- Normal
+            // ----------------------------------------------------
 
             if (
                 f.fieldNo === 2 &&
@@ -1113,9 +1195,10 @@
                 );
             }
 
-            // -------------------------
-            // field3 <- Normal
-            // -------------------------
+
+            // ----------------------------------------------------
+            // field 3 <- Normal
+            // ----------------------------------------------------
 
             else if (
                 f.fieldNo === 3 &&
@@ -1149,43 +1232,32 @@
                 if (
                     pad > 0
                 ) {
+
                     parts.push(
                         spaces
                     );
                 }
             }
 
-            // -------------------------
-            // field7 <- Normal
-            // -------------------------
+
+            // ----------------------------------------------------
+            // field 14 <- Normal
+            // ----------------------------------------------------
 
             else if (
-                f.fieldNo === 7 &&
-                f.wire === 0
+                f.fieldNo === 14 &&
+                f.wire === 2
             ) {
 
                 parts.push(
-                    field7Bytes
+                    normalF14.raw
                 );
             }
 
-            // -------------------------
-            // field12 <- Normal
-            // -------------------------
 
-            else if (
-                f.fieldNo === 12 &&
-                f.wire === 0
-            ) {
-
-                parts.push(
-                    field12Bytes
-                );
-            }
-
-            // -------------------------
+            // ----------------------------------------------------
             // everything else <- Easy
-            // -------------------------
+            // ----------------------------------------------------
 
             else {
 
@@ -1212,18 +1284,32 @@
         ) {
 
             throw new Error(
-                `length mismatch: ${rebuilt.length} != ${targetLength}`
+                `length mismatch ` +
+                `${rebuilt.length} != ` +
+                `${targetLength}`
             );
         }
 
 
         return {
+
             rebuilt,
             pad,
-            normalF7:
-                normalF7.value,
-            normalF12:
-                normalF12.value
+
+            f14:
+                Array.from(
+                    normalF14.data
+                )
+                .map(
+                    x =>
+                        x
+                        .toString(16)
+                        .padStart(
+                            2,
+                            "0"
+                        )
+                )
+                .join(" ")
         };
     }
 
@@ -1262,10 +1348,6 @@
     }
 
 
-    // ============================================================
-    // Find Commander daily number
-    // ============================================================
-
     const prefix =
         "daily-commander/easy-";
 
@@ -1292,7 +1374,7 @@
     }
 
 
-    let pos =
+    let p =
         prefixPos +
         prefix.length;
 
@@ -1301,24 +1383,25 @@
 
 
     while (
-        pos < view.length &&
-        view[pos] >= 48 &&
-        view[pos] <= 57
+        p < view.length &&
+        view[p] >= 48 &&
+        view[p] <= 57
     ) {
 
         number +=
             String.fromCharCode(
-                view[pos]
+                view[p]
             );
 
-        pos++;
+
+        p++;
     }
 
 
     if (!number) {
 
         fail(
-            "daily number parse failed"
+            "Daily number not found"
         );
 
         return;
@@ -1338,10 +1421,6 @@
     );
 
 
-    // ============================================================
-    // Locate stages
-    // ============================================================
-
     const easy =
         locateDailyStage(
             view,
@@ -1359,7 +1438,7 @@
     if (!easy) {
 
         fail(
-            "Easy DailyStage not found"
+            "Easy stage not found"
         );
 
         return;
@@ -1369,7 +1448,7 @@
     if (!normal) {
 
         fail(
-            "Normal DailyStage not found"
+            "Normal stage not found"
         );
 
         return;
@@ -1377,12 +1456,12 @@
 
 
     log(
-        `Easy   ${easy.stage}`
+        `Easy   = ${easy.stage}`
     );
 
 
     log(
-        `Normal ${normal.stage}`
+        `Normal = ${normal.stage}`
     );
 
 
@@ -1411,7 +1490,9 @@
                 normalPayload
             );
 
-    } catch (e) {
+    }
+
+    catch (e) {
 
         fail(
             e.message
@@ -1428,22 +1509,17 @@
 
 
     log(
-        "✅ Patch success"
+        "✅ patch success"
     );
 
 
     log(
-        "Copied fields: 2, 3, 7, 12"
+        "copied fields: 2 + 3 + 14"
     );
 
 
     log(
-        `field7  -> ${patch.normalF7}`
-    );
-
-
-    log(
-        `field12 -> ${patch.normalF12}`
+        `Normal field14 = ${patch.f14}`
     );
 
 
@@ -1460,7 +1536,7 @@
         $response.headers || {};
 
 
-    const newHeaders = {};
+    const headers = {};
 
 
     for (
@@ -1478,13 +1554,13 @@
                 "content-length"
         ) {
 
-            newHeaders[key] =
+            headers[key] =
                 oldHeaders[key];
         }
     }
 
 
-    newHeaders[
+    headers[
         "Content-Length"
     ] =
         String(
@@ -1494,7 +1570,7 @@
 
     $done({
         body: view,
-        headers: newHeaders
+        headers
     });
 
 })();
