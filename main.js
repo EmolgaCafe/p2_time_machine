@@ -2,51 +2,137 @@
  * Phoenix 2 Stage Tool
  * main.js
  *
- * 当前版本功能：
+ * ============================================================================
+ * 核心控制方式
+ * ============================================================================
  *
- *   /backend/login
- *        ↓
- *   找出全部 DailyStage
- *        ↓
- *   提取 field 2 / 3 / 14
- *        ↓
- *   创建 p2stage-raw-v1
- *        ↓
- *   保存到 Loon $persistentStore
+ * Loon persistentStore 中使用一个固定 KV：
  *
- * 当前是纯导出模式：
+ *   key:
+ *       p2
  *
- *   - 不修改 response
- *   - 不修改 request
- *   - 不联网
- *   - 不处理 Community
+ * 这个值决定当前脚本行为。
  *
- * Loon 运行时需要 bundle：
  *
- *   main.js
- *   daily.js
- *   package.js
+ * ----------------------------------------------------------------------------
+ * 1. Record mode
+ * ----------------------------------------------------------------------------
  *
- * injector.js 当前不参与这个 exporter bundle。
+ * p2 = record
+ *
+ * 行为：
+ *
+ *   当前 /backend/login
+ *       ↓
+ *   提取所有 DailyStage
+ *       ↓
+ *   保存 field 2 / 3 / 14
+ *       ↓
+ *   写入 persistentStore 历史库
+ *
+ *
+ * ----------------------------------------------------------------------------
+ * 2. Replay / Inject mode
+ * ----------------------------------------------------------------------------
+ *
+ * p2 = 某个已保存的 missionId
+ *
+ * 例如：
+ *
+ *   p2 = daily-commander/normal-3902
+ *
+ * 行为：
+ *
+ *   persistentStore
+ *       ↓
+ *   查找这个历史 StagePackage
+ *       ↓
+ *   固定注入当前 Daily 第一个 slot
+ *
+ *
+ * ----------------------------------------------------------------------------
+ * 3. Idle mode
+ * ----------------------------------------------------------------------------
+ *
+ * p2 =
+ *
+ * 或者 p2 key 不存在。
+ *
+ * 行为：
+ *
+ *   什么都不修改。
+ *
+ *
+ * ----------------------------------------------------------------------------
+ * 4. Unknown missionId
+ * ----------------------------------------------------------------------------
+ *
+ * 如果 p2 既不是 record，
+ * 又找不到对应历史 missionId：
+ *
+ *   不修改 response
+ *   弹通知说明任务未找到
+ *
+ *
+ * ============================================================================
+ * 设计原则
+ * ============================================================================
+ *
+ * p2 是整个工具唯一的用户控制入口。
+ *
+ * 不需要：
+ *
+ *   - 修改 main.js
+ *   - 修改 MODE
+ *   - 重新 build
+ *
+ * 只修改 Loon KV 中的 p2 即可切换状态。
  */
+
 
 import {
     asUint8Array,
     extractAllDailyStages
 } from "./src/daily.js";
 
+
 import {
     createRawPackage,
-    saveRawPackage
+    saveRawPackage,
+    loadRawPackage
 } from "./src/package.js";
 
+
+import {
+    injectToFirstDailySlot
+} from "./src/injector.js";
+
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const CONTROL_KEY =
+    "p2";
+
+const RECORD_COMMAND =
+    "record";
+
+const TAG =
+    "[P2-StageTool]";
+
+
+// ============================================================================
+// Main
+// ============================================================================
 
 (function () {
     "use strict";
 
-    const TAG =
-        "[P2-StageTool]";
 
+    // ========================================================================
+    // Small helpers
+    // ========================================================================
 
     function log(message) {
         console.log(
@@ -55,81 +141,142 @@ import {
     }
 
 
-    function stop(message) {
-        log(
-            `❌ ${message}`
+    function notify(
+        subtitle,
+        body = ""
+    ) {
+        $notification.post(
+            "Phoenix 2 Stage Tool",
+            subtitle,
+            body
         );
+    }
 
+
+    /**
+     * 不修改服务器 response。
+     */
+    function finishUnmodified() {
         $done({});
     }
 
 
     // ========================================================================
-    // Read response
+    // Read control register
     // ========================================================================
 
-    const body =
-        $response.body;
-
-
-    if (!body) {
-        stop(
-            "没有获取到 /login response body"
+    let control =
+        $persistentStore.read(
+            CONTROL_KEY
         );
+
+
+    /**
+     * persistentStore 返回 string。
+     *
+     * trim()：
+     * 避免手工编辑 KV 时因为前后空格导致识别失败。
+     */
+    if (
+        typeof control ===
+        "string"
+    ) {
+        control =
+            control.trim();
+    }
+
+    else {
+        control = "";
+    }
+
+
+    // ========================================================================
+    // Idle
+    // ========================================================================
+
+    if (!control) {
+        log(
+            "IDLE: p2 为空"
+        );
+
+
+        notify(
+            "空闲状态",
+            "p2 为空，本次不记录、不注入"
+        );
+
+
+        finishUnmodified();
+
+        return;
+    }
+
+
+    // ========================================================================
+    // Read binary response
+    // ========================================================================
+
+    if (
+        !$response ||
+        !$response.body
+    ) {
+        log(
+            "❌ 没有获取到 response body"
+        );
+
+
+        notify(
+            "执行失败",
+            "没有获取到 LoginResponse"
+        );
+
+
+        finishUnmodified();
 
         return;
     }
 
 
     const buffer =
-        asUint8Array(body);
+        asUint8Array(
+            $response.body
+        );
 
 
     if (!buffer) {
-        stop(
-            "response body 不是二进制数据；" +
-            "请启用 binary-body-mode=true"
+        log(
+            "❌ response body 不是二进制数据"
         );
+
+
+        notify(
+            "执行失败",
+            "请确认 binary-body-mode=true"
+        );
+
+
+        finishUnmodified();
 
         return;
     }
 
 
     log(
-        `扫描 LoginResponse: ` +
-        `${buffer.length} bytes`
+        `control="${control}", ` +
+        `LoginResponse=${buffer.length} B`
     );
 
 
     // ========================================================================
-    // Extract Daily
+    // RECORD
     // ========================================================================
-
-    let stages;
-
-
-    try {
-        stages =
-            extractAllDailyStages(
-                buffer
-            );
-    }
-
-    catch (e) {
-        stop(
-            `Daily 提取失败: ` +
-            e.message
-        );
-
-        return;
-    }
-
 
     if (
-        stages.length === 0
+        control.toLowerCase() ===
+        RECORD_COMMAND
     ) {
-        stop(
-            "没有发现真正的 DailyStage"
+        runRecord(
+            buffer
         );
 
         return;
@@ -137,105 +284,398 @@ import {
 
 
     // ========================================================================
-    // Save packages
+    // REPLAY / INJECT
+    //
+    // 除 record 外，其它非空值全部按照 missionId 查询。
     // ========================================================================
 
-    const saved = [];
-    const failed = [];
+    runReplay(
+        buffer,
+        control
+    );
 
 
-    for (const stage of stages) {
+
+    // ========================================================================
+    // RECORD implementation
+    // ========================================================================
+
+    function runRecord(
+        responseBody
+    ) {
+        log(
+            "MODE=RECORD"
+        );
+
+
+        let stages;
+
+
         try {
-            const pkg =
-                createRawPackage(
-                    stage
+            stages =
+                extractAllDailyStages(
+                    responseBody
+                );
+        }
+
+        catch (e) {
+            log(
+                `❌ Daily 提取失败: ` +
+                e.message
+            );
+
+
+            notify(
+                "记录失败",
+                e.message
+            );
+
+
+            finishUnmodified();
+
+            return;
+        }
+
+
+        if (
+            stages.length === 0
+        ) {
+            log(
+                "❌ 没有发现 DailyStage"
+            );
+
+
+            notify(
+                "记录失败",
+                "LoginResponse 中没有找到 DailyStage"
+            );
+
+
+            finishUnmodified();
+
+            return;
+        }
+
+
+        const saved = [];
+        const failed = [];
+
+
+        // --------------------------------------------------------------------
+        // 保存当天所有 DailyStage
+        // --------------------------------------------------------------------
+
+        for (
+            const stage of stages
+        ) {
+            try {
+                const pkg =
+                    createRawPackage(
+                        stage
+                    );
+
+
+                const result =
+                    saveRawPackage(
+                        pkg
+                    );
+
+
+                if (!result.ok) {
+                    failed.push(
+                        stage.missionId
+                    );
+
+                    log(
+                        `❌ 保存失败: ` +
+                        stage.missionId
+                    );
+
+                    continue;
+                }
+
+
+                saved.push(
+                    stage.missionId
                 );
 
 
-            const result =
-                saveRawPackage(pkg);
+                log(
+                    `✅ RECORD ` +
+                    `${stage.missionId}` +
+                    ` | Lua ` +
+                    `${stage.field3.length} B`
+                );
+            }
 
-
-            if (!result.ok) {
+            catch (e) {
                 failed.push(
                     stage.missionId
                 );
 
-                log(
-                    `❌ 保存失败: ` +
-                    stage.missionId
-                );
 
-                continue;
+                log(
+                    `❌ ${stage.missionId}: ` +
+                    e.message
+                );
+            }
+        }
+
+
+        // --------------------------------------------------------------------
+        // Notification
+        // --------------------------------------------------------------------
+
+        if (
+            saved.length > 0
+        ) {
+            let body =
+                saved.join("\n");
+
+
+            if (
+                failed.length > 0
+            ) {
+                body +=
+                    `\n\n失败 ${failed.length} 个`;
             }
 
 
-            saved.push({
-                missionId:
-                    stage.missionId,
-
-                luaBytes:
-                    stage.field3.length,
-
-                packageChars:
-                    result.jsonLength
-            });
-
-
-            log(
-                `✅ ${stage.missionId} | ` +
-                `Lua ${stage.field3.length} B | ` +
-                `package ${result.jsonLength} chars`
+            notify(
+                `RECORD：已保存 ${saved.length} 个 Daily`,
+                body
             );
+        }
+
+        else {
+            notify(
+                "RECORD：没有保存成功",
+                `失败 ${failed.length} 个任务`
+            );
+        }
+
+
+        /**
+         * RECORD 是纯读取 / 存储。
+         *
+         * 不修改游戏收到的 LoginResponse。
+         */
+        finishUnmodified();
+    }
+
+
+
+    // ========================================================================
+    // REPLAY implementation
+    // ========================================================================
+
+    function runReplay(
+        responseBody,
+        missionId
+    ) {
+        log(
+            `MODE=REPLAY: ${missionId}`
+        );
+
+
+        // --------------------------------------------------------------------
+        // 1. 从历史库读取指定 Package
+        // --------------------------------------------------------------------
+
+        let pkg;
+
+
+        try {
+            pkg =
+                loadRawPackage(
+                    missionId
+                );
         }
 
         catch (e) {
-            failed.push(
-                stage.missionId
-            );
-
             log(
-                `❌ ${stage.missionId}: ` +
+                `❌ Package 读取异常: ` +
                 e.message
             );
+
+
+            notify(
+                "任务读取失败",
+                `${missionId}\n${e.message}`
+            );
+
+
+            finishUnmodified();
+
+            return;
         }
-    }
 
 
-    // ========================================================================
-    // Result notification
-    // ========================================================================
+        // --------------------------------------------------------------------
+        // 找不到：
+        //
+        // 安全行为 = 什么都不修改。
+        // --------------------------------------------------------------------
 
-    if (
-        saved.length > 0
-    ) {
-        const names =
-            saved
-                .map(
-                    item =>
-                        item.missionId
-                )
-                .join("\n");
+        if (!pkg) {
+            log(
+                `⚠️ 未找到历史任务: ` +
+                missionId
+            );
 
 
-        $notification.post(
-            "Phoenix 2 Stage Tool",
-            `已保存 ${saved.length} 个 DailyStage`,
-            names
-        );
-    }
+            notify(
+                "未找到历史任务",
+                `${missionId}\n本次不修改 Daily`
+            );
 
 
-    if (
-        failed.length > 0
-    ) {
+            finishUnmodified();
+
+            return;
+        }
+
+
         log(
-            `⚠️ ${failed.length} 个 DailyStage 保存失败`
+            `✅ 找到 Package: ` +
+            pkg.missionId
         );
+
+
+        // --------------------------------------------------------------------
+        // 2. 注入当前 Daily 第一个 slot
+        // --------------------------------------------------------------------
+
+        let result;
+
+
+        try {
+            result =
+                injectToFirstDailySlot(
+                    responseBody,
+                    pkg
+                );
+        }
+
+        catch (e) {
+            log(
+                `❌ 注入失败: ` +
+                e.message
+            );
+
+
+            notify(
+                "注入失败",
+                `${missionId}\n${e.message}`
+            );
+
+
+            finishUnmodified();
+
+            return;
+        }
+
+
+        // --------------------------------------------------------------------
+        // 3. HTTP headers
+        //
+        // protobuf body 长度可能变化，所以旧 Content-Length 不可继续使用。
+        //
+        // 同时移除 Content-Encoding，确保返回的是当前 raw body。
+        // --------------------------------------------------------------------
+
+        const headers = {};
+
+
+        if ($response.headers) {
+            for (
+                const key in
+                $response.headers
+            ) {
+                const lower =
+                    key.toLowerCase();
+
+
+                if (
+                    lower ===
+                    "content-length" ||
+                    lower ===
+                    "content-encoding"
+                ) {
+                    continue;
+                }
+
+
+                headers[key] =
+                    $response.headers[key];
+            }
+        }
+
+
+        headers["Content-Length"] =
+            String(
+                result.body.length
+            );
+
+
+        // --------------------------------------------------------------------
+        // 4. Status
+        // --------------------------------------------------------------------
+
+        log(
+            `✅ REPLAY SUCCESS`
+        );
+
+
+        log(
+            `source: ` +
+            result.sourceMissionId
+        );
+
+
+        log(
+            `target: ` +
+            result.targetMissionId
+        );
+
+
+        log(
+            `DailyStage: ` +
+            `${result.oldTargetPayloadSize}` +
+            ` -> ` +
+            `${result.newTargetPayloadSize}`
+        );
+
+
+        log(
+            `HTTP body: ` +
+            `${result.oldSize}` +
+            ` -> ` +
+            `${result.newSize}`
+        );
+
+
+        notify(
+            "REPLAY：注入成功",
+            (
+                `${result.sourceMissionId}` +
+                `\n↓\n` +
+                `${result.targetMissionId}`
+            )
+        );
+
+
+        // --------------------------------------------------------------------
+        // 5. Return modified response
+        // --------------------------------------------------------------------
+
+        $done({
+            body:
+                result.body,
+
+            headers:
+                headers
+        });
     }
 
-
-    // 纯 extractor。
-    // 原始服务器响应不做任何修改。
-    $done({});
 })();
