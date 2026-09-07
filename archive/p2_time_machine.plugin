@@ -3,7 +3,8 @@
 #!author=zy
 
 [Script]
-http-response ^https?:\/\/proxy-phoenix2\.firigames\.com\/phoenix2\/backend\/login script-path=https://raw.githubusercontent.com/EmolgaCafe/p2_time_machine/main/p2_daily_exporter.js, requires-body=true, binary-body-mode=true, timeout=10, tag=P2 Daily Exporter
+http-response ^https?:\/\/proxy-phoenix2\.firigames\.com\/phoenix2\/backend\/login script-path=https://raw.githubusercontent.com/EmolgaCafe/p2_time_machine/main/dist/p2_daily_exporter.js, requires-body=true, binary-body-mode=true, timeout=10, tag=P2 Daily Exporter
+http-request ^https:\/\/proxy-phoenix2\.firigames\.com\/phoenix2\/backend\/submit-score(?:\?.*)?$ script-path=https://raw.githubusercontent.com/EmolgaCafe/p2_time_machine/main/dist/block_submit_score.js, timeout=10, tag=P2 Block Score
 
 [Mitm]
 hostname = proxy-phoenix2.firigames.com
