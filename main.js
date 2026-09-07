@@ -3,7 +3,7 @@
  * main.js
  *
  * ============================================================================
- * p2 控制方式
+ * p2 控制
  * ============================================================================
  *
  * persistentStore key:
@@ -11,22 +11,20 @@
  *   p2
  *
  *
- * 1. 记录当前 Daily
+ * 记录模式：
  *
  *   p2 = record
  *
- * 会保存当前 LoginResponse 中所有 DailyStage。
+ * 自动保存当前 LoginResponse 中的全部 DailyStage。
  *
  *
- * 2. 载入历史 Daily
+ * 历史任务复玩：
  *
- * 格式：
- *
- *   <rank>-<dailyId>-<slot>
+ *   p2 = <rank>-<dailyId>-<slot>
  *
  * 例如：
  *
- *   cadet-3902-1
+ *   commander-3902-1
  *   commander-3902-2
  *   commander-3902-3
  *
@@ -36,42 +34,30 @@
  *   2 = normal
  *   3 = hard
  *
+ * 内部转换为：
  *
- * 注意：
- *
- * 本版本不会直接“猜”完整 missionId 后查 KV。
- *
- * 而是：
- *
- *   cadet-3902-1
- *        ↓
- *   搜索 p2stage.raw.index
- *        ↓
- *   找到实际保存的：
- *   daily-cadet/easy-3902
- *        ↓
- *   再读取对应 Package
- *
- * 因此 rank 不需要预定义。
+ *   commander-3902-1
+ *       ↓
+ *   daily-commander/easy-3902
  *
  *
- * 3. 其它任意值
+ * 其它任何值：
  *
- *   不修改 LoginResponse
- *   弹一个简短通知
+ *   - 不修改 LoginResponse
+ *   - 给出简短通知
  *
  *
  * ============================================================================
- * submit-score 阻断
+ * 注意
  * ============================================================================
  *
- * 不在本文件处理。
+ * submit-score 阻断不在本文件处理。
  *
- * 由独立 request script：
+ * 它由独立的：
  *
  *   src/block_submit_score.js
  *
- * 负责。
+ * 在请求发出前直接 abort。
  */
 
 
@@ -84,8 +70,7 @@ import {
 import {
     createRawPackage,
     saveRawPackage,
-    loadRawPackage,
-    readPackageIndex
+    loadRawPackage
 } from "./src/package.js";
 
 
@@ -135,7 +120,10 @@ const SLOT_NAMES = {
 
 
     /**
-     * 通知尽量保持简短。
+     * 通知刻意保持很短。
+     *
+     * iOS / Loon 通知区域较小，
+     * 不把内部调试细节塞进去。
      */
     function notify(
         subtitle,
@@ -149,37 +137,41 @@ const SLOT_NAMES = {
     }
 
 
-    /**
-     * 不修改服务器 response。
-     */
     function finishUnmodified() {
         $done({});
     }
 
 
-    // ========================================================================
-    // 用户输入解析
-    // ========================================================================
-
     /**
      * 用户简写：
      *
-     *   cadet-3902-1
+     *   commander-3902-2
      *
-     * 解析为：
+     * 转换为：
      *
-     * {
-     *   rank: "cadet",
-     *   dailyId: "3902",
-     *   slot: 1,
-     *   difficulty: "easy"
-     * }
+     *   daily-commander/normal-3902
      *
-     * rank 不写死。
+     *
+     * 返回 null 表示格式不是一个有效的任务选择。
      */
     function parseMissionSelector(
         text
     ) {
+        /**
+         * rank：
+         *   commander
+         *   marshal
+         *   ...
+         *
+         * 为了不把 rank 名称写死，
+         * 这里只要求它由字母/数字/_ 组成。
+         *
+         * daily number：
+         *   数字
+         *
+         * slot：
+         *   1 / 2 / 3
+         */
         const match =
             /^([a-z0-9_]+)-(\d+)-([1-3])$/i
                 .exec(text);
@@ -191,8 +183,7 @@ const SLOT_NAMES = {
 
 
         const rank =
-            match[1]
-                .toLowerCase();
+            match[1].toLowerCase();
 
         const dailyId =
             match[2];
@@ -216,123 +207,16 @@ const SLOT_NAMES = {
 
             slot,
 
-            difficulty
+            difficulty,
+
+            missionId:
+                `daily-${rank}/${difficulty}-${dailyId}`
         };
     }
 
 
-    /**
-     * 从实际保存的 index 中寻找对应任务。
-     *
-     * 例如：
-     *
-     * 用户：
-     *
-     *   cadet-3902-1
-     *
-     * index：
-     *
-     *   daily-cadet/easy-3902
-     *
-     * 返回：
-     *
-     *   daily-cadet/easy-3902
-     *
-     *
-     * 这样实际保存的数据是唯一 source of truth。
-     */
-    function resolveSavedMission(
-        selection
-    ) {
-        let index;
-
-
-        try {
-            index =
-                readPackageIndex();
-        }
-
-        catch (e) {
-            log(
-                `index read error: ` +
-                e.message
-            );
-
-            return null;
-        }
-
-
-        const expectedRank =
-            selection.rank
-                .toLowerCase();
-
-        const expectedDifficulty =
-            selection.difficulty
-                .toLowerCase();
-
-        const expectedDailyId =
-            String(
-                selection.dailyId
-            );
-
-
-        for (
-            const missionId of index
-        ) {
-            /**
-             * 当前实际 Daily missionId 格式：
-             *
-             *   daily-cadet/easy-3902
-             *   daily-commander/normal-3902
-             *
-             * rank 不限制具体名字。
-             */
-            const match =
-                /^daily-([^/]+)\/(easy|normal|hard)-(\d+)$/i
-                    .exec(
-                        missionId
-                    );
-
-
-            if (!match) {
-                continue;
-            }
-
-
-            const rank =
-                match[1]
-                    .toLowerCase();
-
-            const difficulty =
-                match[2]
-                    .toLowerCase();
-
-            const dailyId =
-                match[3];
-
-
-            if (
-                rank ===
-                    expectedRank &&
-                difficulty ===
-                    expectedDifficulty &&
-                dailyId ===
-                    expectedDailyId
-            ) {
-                /**
-                 * 返回 index 中真实保存的 missionId。
-                 */
-                return missionId;
-            }
-        }
-
-
-        return null;
-    }
-
-
     // ========================================================================
-    // Read p2 control
+    // Read p2
     // ========================================================================
 
     let control =
@@ -359,7 +243,9 @@ const SLOT_NAMES = {
 
 
     // ========================================================================
-    // Read LoginResponse
+    // Read response body
+    //
+    // 无论 record 还是 replay 都需要 LoginResponse。
     // ========================================================================
 
     if (
@@ -370,12 +256,10 @@ const SLOT_NAMES = {
             "no response body"
         );
 
-
         notify(
             "失败",
             "无 LoginResponse"
         );
-
 
         finishUnmodified();
 
@@ -394,12 +278,10 @@ const SLOT_NAMES = {
             "body is not binary"
         );
 
-
         notify(
             "失败",
             "binary-body-mode"
         );
-
 
         finishUnmodified();
 
@@ -424,7 +306,7 @@ const SLOT_NAMES = {
 
 
     // ========================================================================
-    // Parse task selector
+    // TASK SELECTOR
     // ========================================================================
 
     const selection =
@@ -434,22 +316,20 @@ const SLOT_NAMES = {
 
 
     /**
-     * 既不是 record，
-     * 也不是：
+     * 不是 record，
+     * 也不是 rank-id-slot 格式。
      *
-     *   rank-id-slot
-     *
-     * 那就什么都不做。
+     * 什么都不做。
      */
     if (!selection) {
         log(
-            `invalid control: "${control}"`
+            `idle / invalid control: "${control}"`
         );
 
 
         notify(
             "未执行",
-            control || "p2 无效"
+            control || "p2 未设置"
         );
 
 
@@ -471,7 +351,7 @@ const SLOT_NAMES = {
 
 
     // ========================================================================
-    // RECORD implementation
+    // RECORD
     // ========================================================================
 
     function runRecord(
@@ -549,22 +429,17 @@ const SLOT_NAMES = {
                     );
 
 
-                if (
-                    result.ok
-                ) {
+                if (result.ok) {
                     saved++;
 
-
                     log(
-                        `saved ` +
-                        stage.missionId
+                        `saved ${stage.missionId}`
                     );
                 }
 
                 else {
                     log(
-                        `save failed ` +
-                        stage.missionId
+                        `save failed ${stage.missionId}`
                     );
                 }
             }
@@ -586,8 +461,7 @@ const SLOT_NAMES = {
 
 
         /**
-         * Record 模式只保存。
-         * 不修改当前 LoginResponse。
+         * RECORD 不修改游戏数据。
          */
         finishUnmodified();
     }
@@ -595,52 +469,24 @@ const SLOT_NAMES = {
 
 
     // ========================================================================
-    // REPLAY implementation
+    // REPLAY
     // ========================================================================
 
     function runReplay(
         responseBody,
         selection
     ) {
-        // --------------------------------------------------------------------
-        // 1. 从 index 中寻找实际保存的 missionId
-        // --------------------------------------------------------------------
-
         const missionId =
-            resolveSavedMission(
-                selection
-            );
-
-
-        if (!missionId) {
-            log(
-                `not found: ` +
-                selection.selector
-            );
-
-
-            notify(
-                "任务不存在",
-                selection.selector
-            );
-
-
-            finishUnmodified();
-
-            return;
-        }
+            selection.missionId;
 
 
         log(
-            `resolved ` +
-            `${selection.selector}` +
-            ` -> ` +
-            `${missionId}`
+            `lookup ${missionId}`
         );
 
 
         // --------------------------------------------------------------------
-        // 2. 读取 Package
+        // Read package
         // --------------------------------------------------------------------
 
         let pkg;
@@ -673,13 +519,12 @@ const SLOT_NAMES = {
 
 
         /**
-         * 理论上 index 里找到以后应该一定存在，
-         * 但还是保留这个检查，防止 index / KV 不一致。
+         * selector 格式正确，
+         * 但是对应任务没有被保存。
          */
         if (!pkg) {
             log(
-                `package missing: ` +
-                missionId
+                `not found: ${missionId}`
             );
 
 
@@ -696,7 +541,7 @@ const SLOT_NAMES = {
 
 
         // --------------------------------------------------------------------
-        // 3. Inject
+        // Inject
         // --------------------------------------------------------------------
 
         let result;
@@ -730,15 +575,13 @@ const SLOT_NAMES = {
 
 
         // --------------------------------------------------------------------
-        // 4. Rebuild HTTP headers
+        // Rebuild headers
         // --------------------------------------------------------------------
 
         const headers = {};
 
 
-        if (
-            $response.headers
-        ) {
+        if ($response.headers) {
             for (
                 const key in
                 $response.headers
@@ -748,18 +591,16 @@ const SLOT_NAMES = {
 
 
                 /**
-                 * 新 body 长度可能发生变化。
+                 * 新 body 长度可能不同。
                  *
-                 * 因此：
-                 *
-                 *   删除旧 Content-Length
-                 *   删除旧 Content-Encoding
+                 * 旧 Content-Length / Content-Encoding
+                 * 都不继续使用。
                  */
                 if (
                     lower ===
-                        "content-length" ||
+                    "content-length" ||
                     lower ===
-                        "content-encoding"
+                    "content-encoding"
                 ) {
                     continue;
                 }
@@ -771,20 +612,18 @@ const SLOT_NAMES = {
         }
 
 
-        headers[
-            "Content-Length"
-        ] =
+        headers["Content-Length"] =
             String(
                 result.body.length
             );
 
 
         // --------------------------------------------------------------------
-        // 5. Log
+        // Status
         // --------------------------------------------------------------------
 
         log(
-            "REPLAY OK"
+            `REPLAY OK`
         );
 
 
@@ -796,17 +635,15 @@ const SLOT_NAMES = {
 
 
         log(
-            `body ` +
-            `${result.oldSize}` +
+            `body ${result.oldSize}` +
             ` -> ` +
             `${result.newSize}`
         );
 
 
-        // --------------------------------------------------------------------
-        // 6. Notification
-        // --------------------------------------------------------------------
-
+        /**
+         * 给用户看的通知只显示简写。
+         */
         notify(
             "任务已载入",
             selection.selector
@@ -814,7 +651,7 @@ const SLOT_NAMES = {
 
 
         // --------------------------------------------------------------------
-        // 7. Return modified LoginResponse
+        // Return modified LoginResponse
         // --------------------------------------------------------------------
 
         $done({
