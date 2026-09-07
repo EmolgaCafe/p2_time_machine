@@ -1,53 +1,23 @@
 /**
- * Phoenix 2 Daily Minimal Stage Swap
+ * Phoenix 2 Daily Stage Injector - Experiment 1
  *
- * 功能：
- *   将当天 Commander Normal 的：
- *     field 2 = stage id
- *     field 3 = Lua stage script
+ * 目标：
+ * 将当天 Commander Normal DailyStage 完整复制到 Easy 槽位，
+ * 验证 DailyStage 是否可以独立替换。
  *
- *   替换到 Easy DailyStage 中。
- *
- * 保留：
- *   Easy 的 field 1（daily id）
- *   Easy 的 field 4+ 所有 metadata
- *
- * 特点：
- *   - 不做长度对齐
- *   - 不做 Lua padding
- *   - 自动重建 protobuf length
- *   - 仅修改本地 /login response
- *   - 不发送额外请求
+ * 仅修改本地收到的 response：
+ * - 不发起额外网络请求
+ * - 不上传任何数据
+ * - 不修改 request
+ * - 不修改 Normal / Hard 原始记录
+ * - 保持 Easy record 长度不变
  */
 
 (function () {
-    const PREFIX = "[P2-MinSwap]";
+    const PREFIX = "[P2-DailyHack]";
 
     function log(msg) {
         console.log(`${PREFIX} ${msg}`);
-    }
-
-    function finish(body) {
-        const headers = {};
-        const raw = $response.headers || {};
-
-        for (const k in raw) {
-            const lower = k.toLowerCase();
-
-            if (
-                lower !== "content-length" &&
-                lower !== "content-encoding"
-            ) {
-                headers[k] = raw[k];
-            }
-        }
-
-        headers["Content-Length"] = String(body.length);
-
-        $done({
-            body,
-            headers
-        });
     }
 
     function fail(msg) {
@@ -56,12 +26,12 @@
     }
 
     // ============================================================
-    // Basic binary helpers
+    // Binary helpers
     // ============================================================
 
-    function toBytes(body) {
+    function cloneBodyAsUint8Array(body) {
         if (body instanceof Uint8Array) {
-            const out = new Uint8Array(body.length);
+            const out = new Uint8Array(body.byteLength);
             out.set(body);
             return out;
         }
@@ -74,7 +44,7 @@
             const offset = body.byteOffset || 0;
             const length =
                 body.byteLength ||
-                body.buffer.byteLength - offset;
+                (body.buffer.byteLength - offset);
 
             const src = new Uint8Array(
                 body.buffer,
@@ -84,7 +54,6 @@
 
             const out = new Uint8Array(src.length);
             out.set(src);
-
             return out;
         }
 
@@ -95,34 +64,38 @@
         const out = new Uint8Array(str.length);
 
         for (let i = 0; i < str.length; i++) {
-            out[i] = str.charCodeAt(i);
+            const c = str.charCodeAt(i);
+
+            if (c > 0x7f) {
+                throw new Error("Non-ASCII string");
+            }
+
+            out[i] = c;
         }
 
         return out;
     }
 
-    function asciiString(buf) {
+    function asciiString(bytes) {
         let s = "";
 
-        for (let i = 0; i < buf.length; i++) {
-            s += String.fromCharCode(buf[i]);
+        for (let i = 0; i < bytes.length; i++) {
+            s += String.fromCharCode(bytes[i]);
         }
 
         return s;
     }
 
-    function findBytes(buf, needle, start = 0) {
+    function findBytes(buf, needle, from) {
+        from = from || 0;
+
         outer:
         for (
-            let i = start;
+            let i = from;
             i <= buf.length - needle.length;
             i++
         ) {
-            for (
-                let j = 0;
-                j < needle.length;
-                j++
-            ) {
+            for (let j = 0; j < needle.length; j++) {
                 if (buf[i + j] !== needle[j]) {
                     continue outer;
                 }
@@ -132,6 +105,12 @@
         }
 
         return -1;
+    }
+
+    function sliceCopy(buf, start, end) {
+        const out = new Uint8Array(end - start);
+        out.set(buf.subarray(start, end));
+        return out;
     }
 
     function concat(parts) {
@@ -153,21 +132,24 @@
         return out;
     }
 
-    function copySlice(buf, start, end) {
-        const out = new Uint8Array(end - start);
-        out.set(buf.subarray(start, end));
-        return out;
-    }
-
     // ============================================================
-    // Varint
+    // Protobuf varint
     // ============================================================
 
-    function readVarint(buf, pos, limit = buf.length) {
+    function readVarint(buf, pos, limit) {
+        limit =
+            limit === undefined
+                ? buf.length
+                : limit;
+
         let value = 0;
         let shift = 0;
+        const start = pos;
 
-        while (pos < limit && shift <= 49) {
+        while (
+            pos < limit &&
+            shift <= 49
+        ) {
             const b = buf[pos++];
 
             value +=
@@ -177,7 +159,8 @@
             if ((b & 0x80) === 0) {
                 return {
                     value,
-                    next: pos
+                    next: pos,
+                    size: pos - start
                 };
             }
 
@@ -188,7 +171,16 @@
     }
 
     function encodeVarint(value) {
-        const out = [];
+        if (
+            !Number.isSafeInteger(value) ||
+            value < 0
+        ) {
+            throw new Error(
+                `Invalid varint: ${value}`
+            );
+        }
+
+        const arr = [];
 
         do {
             let b = value % 128;
@@ -200,15 +192,15 @@
                 b |= 0x80;
             }
 
-            out.push(b);
+            arr.push(b);
 
         } while (value > 0);
 
-        return new Uint8Array(out);
+        return new Uint8Array(arr);
     }
 
     // ============================================================
-    // Protobuf parser
+    // Generic protobuf field parser
     // ============================================================
 
     function parseFields(message) {
@@ -224,7 +216,7 @@
 
             if (!tagInfo) {
                 throw new Error(
-                    `bad tag @${pos}`
+                    `Bad protobuf tag at ${pos}`
                 );
             }
 
@@ -232,8 +224,7 @@
             const fieldNo =
                 Math.floor(tag / 8);
 
-            const wire =
-                tag & 7;
+            const wire = tag & 7;
 
             pos = tagInfo.next;
 
@@ -254,7 +245,7 @@
 
                 if (!v) {
                     throw new Error(
-                        `bad varint field ${fieldNo}`
+                        `Bad varint field ${fieldNo}`
                     );
                 }
 
@@ -266,22 +257,25 @@
 
             } else if (wire === 2) {
 
-                const len =
+                const lenInfo =
                     readVarint(message, pos);
 
-                if (!len) {
+                if (!lenInfo) {
                     throw new Error(
-                        `bad len field ${fieldNo}`
+                        `Bad length field ${fieldNo}`
                     );
                 }
 
-                pos = len.next;
+                pos = lenInfo.next;
+
+                field.length =
+                    lenInfo.value;
 
                 field.dataStart =
                     pos;
 
                 field.dataEnd =
-                    pos + len.value;
+                    pos + field.length;
 
                 pos =
                     field.dataEnd;
@@ -293,13 +287,13 @@
             } else {
 
                 throw new Error(
-                    `unsupported wire=${wire}`
+                    `Unsupported wire type ${wire}`
                 );
             }
 
             if (pos > message.length) {
                 throw new Error(
-                    `field ${fieldNo} overflow`
+                    `Field ${fieldNo} exceeds record`
                 );
             }
 
@@ -311,12 +305,13 @@
         return fields;
     }
 
-    function getLDField(
+    function getLengthDelimitedField(
         message,
         fields,
         fieldNo
     ) {
         for (const f of fields) {
+
             if (
                 f.fieldNo === fieldNo &&
                 f.wire === 2
@@ -332,7 +327,18 @@
     }
 
     // ============================================================
-    // Find real DailyStage record
+    // DailyStage locator
+    //
+    // 注意：
+    // 同一个 daily identifier 在 Login 包里会出现不止一次。
+    //
+    // 真正需要的是：
+    //
+    // field1 = daily-commander/...
+    // field2 = stage.xxxxx
+    // field3 = 大段 Lua
+    //
+    // 不是前面的 ~200 byte 索引记录。
     // ============================================================
 
     function locateDailyRecord(
@@ -344,55 +350,70 @@
 
         let searchFrom = 0;
 
-        while (true) {
-            const idPos =
+        const candidates = [];
+
+        while (
+            searchFrom <=
+            buf.length - idBytes.length
+        ) {
+            const idIndex =
                 findBytes(
                     buf,
                     idBytes,
                     searchFrom
                 );
 
-            if (idPos < 0) {
-                return null;
+            if (idIndex < 0) {
+                break;
             }
 
             searchFrom =
-                idPos + 1;
+                idIndex + 1;
 
             // --------------------------------
-            // field 1 should be:
+            // 找 inner message field1 开头
             //
-            // 0A <len> "daily-..."
+            // field 1 string:
+            //
+            // 0A <length> "daily-..."
             // --------------------------------
 
             let payloadStart = -1;
 
             for (
-                let p =
+                let tagPos =
                     Math.max(
                         0,
-                        idPos - 6
+                        idIndex - 6
                     );
-                p < idPos;
-                p++
+                tagPos < idIndex;
+                tagPos++
             ) {
-                if (buf[p] !== 0x0a) {
+                if (
+                    buf[tagPos] !== 0x0a
+                ) {
                     continue;
                 }
 
-                const len =
+                const lenInfo =
                     readVarint(
                         buf,
-                        p + 1,
-                        idPos
+                        tagPos + 1,
+                        idIndex
                     );
 
+                if (!lenInfo) {
+                    continue;
+                }
+
                 if (
-                    len &&
-                    len.next === idPos &&
-                    len.value === idBytes.length
+                    lenInfo.next === idIndex &&
+                    lenInfo.value ===
+                        idBytes.length
                 ) {
-                    payloadStart = p;
+                    payloadStart =
+                        tagPos;
+
                     break;
                 }
             }
@@ -402,47 +423,46 @@
             }
 
             // --------------------------------
-            // Find outer wrapper:
-            //
-            // <tag> <message length> <DailyStage>
+            // 找包住整个 DailyStage 的
+            // outer length-delimited wrapper
             // --------------------------------
 
-            let outerStart = -1;
+            let outerTagPos = -1;
             let payloadLength = -1;
 
             for (
-                let p =
+                let tagPos =
                     Math.max(
                         0,
                         payloadStart - 8
                     );
-                p < payloadStart;
-                p++
+                tagPos < payloadStart;
+                tagPos++
             ) {
-                const tag =
+                const tagInfo =
                     readVarint(
                         buf,
-                        p,
+                        tagPos,
                         payloadStart
                     );
 
                 if (
-                    !tag ||
-                    (tag.value & 7) !== 2
+                    !tagInfo ||
+                    (tagInfo.value & 7) !== 2
                 ) {
                     continue;
                 }
 
-                const len =
+                const lenInfo =
                     readVarint(
                         buf,
-                        tag.next,
+                        tagInfo.next,
                         payloadStart
                     );
 
                 if (
-                    !len ||
-                    len.next !==
+                    !lenInfo ||
+                    lenInfo.next !==
                         payloadStart
                 ) {
                     continue;
@@ -450,18 +470,20 @@
 
                 if (
                     payloadStart +
-                        len.value >
+                        lenInfo.value >
                     buf.length
                 ) {
                     continue;
                 }
 
-                outerStart = p;
+                outerTagPos =
+                    tagPos;
+
                 payloadLength =
-                    len.value;
+                    lenInfo.value;
             }
 
-            if (outerStart < 0) {
+            if (outerTagPos < 0) {
                 continue;
             }
 
@@ -476,7 +498,7 @@
                 );
 
             // --------------------------------
-            // Ensure this is actual stage record
+            // 排除同名的小型 metadata record
             // --------------------------------
 
             try {
@@ -484,121 +506,346 @@
                     parseFields(payload);
 
                 const f1 =
-                    getLDField(
+                    getLengthDelimitedField(
                         payload,
                         fields,
                         1
                     );
 
                 const f2 =
-                    getLDField(
+                    getLengthDelimitedField(
                         payload,
                         fields,
                         2
                     );
 
                 const f3 =
-                    getLDField(
+                    getLengthDelimitedField(
                         payload,
                         fields,
                         3
                     );
 
-                if (!f1 || !f2 || !f3) {
-                    continue;
-                }
-
                 if (
-                    asciiString(f1) !==
-                    identifier
+                    !f1 ||
+                    !f2 ||
+                    !f3
                 ) {
                     continue;
                 }
 
-                const stage =
+                const idText =
+                    asciiString(f1);
+
+                const stageText =
                     asciiString(f2);
 
                 if (
-                    !stage.startsWith(
-                        "stage."
-                    )
+                    idText !== identifier
                 ) {
                     continue;
                 }
 
+                if (
+                    stageText.indexOf(
+                        "stage."
+                    ) !== 0
+                ) {
+                    continue;
+                }
+
+                // 真正 Lua 都是几十 KB。
                 if (f3.length < 10000) {
                     continue;
                 }
 
-                if (
+                // 再确认是 generator Lua。
+                const marker1 =
+                    findBytes(
+                        f3,
+                        asciiBytes(
+                            "local function load_enemy"
+                        ),
+                        0
+                    );
+
+                const marker2 =
                     findBytes(
                         f3,
                         asciiBytes(
                             "load_stage({"
-                        )
-                    ) < 0
+                        ),
+                        0
+                    );
+
+                if (
+                    marker1 < 0 ||
+                    marker2 < 0
                 ) {
                     continue;
                 }
 
-                return {
+                candidates.push({
                     identifier,
-                    outerStart,
+                    idIndex,
+                    outerTagPos,
                     payloadStart,
-                    payloadEnd,
                     payloadLength,
-                    payload,
-                    fields,
-                    stage,
-                    lua: f3
-                };
+                    payloadEnd,
+                    stageText,
+                    scriptLength:
+                        f3.length
+                });
 
             } catch (e) {
-                continue;
+                // 不是目标 record，
+                // 继续搜索下一个 occurrence。
             }
         }
+
+        if (
+            candidates.length === 0
+        ) {
+            return null;
+        }
+
+        // 正常只有一个。
+        // 如果未来重复，取 Lua 最大的。
+        candidates.sort(
+            (a, b) =>
+                b.scriptLength -
+                a.scriptLength
+        );
+
+        return candidates[0];
     }
 
     // ============================================================
-    // Rebuild protobuf message
-    //
-    // Replace only selected fields
+    // Normal payload -> Easy payload
     // ============================================================
 
-    function rebuildMessage(
-        message,
-        fields,
-        replacements
+    function rebuildNormalAsEasy(
+        normalPayload,
+        easyIdentifier,
+        targetLength
     ) {
+        const fields =
+            parseFields(
+                normalPayload
+            );
+
+        const easyIdBytes =
+            asciiBytes(
+                easyIdentifier
+            );
+
+        let field1Count = 0;
+        let field3Count = 0;
+        let field3 = null;
+
+        let fixedLength = 0;
+
+        // --------------------------------
+        // 计算除了 Lua(field3) 之外的长度
+        // --------------------------------
+
+        for (const f of fields) {
+
+            if (
+                f.fieldNo === 1 &&
+                f.wire === 2
+            ) {
+                field1Count++;
+
+                fixedLength +=
+                    encodeVarint(
+                        f.tag
+                    ).length;
+
+                fixedLength +=
+                    encodeVarint(
+                        easyIdBytes.length
+                    ).length;
+
+                fixedLength +=
+                    easyIdBytes.length;
+
+            } else if (
+                f.fieldNo === 3 &&
+                f.wire === 2
+            ) {
+
+                field3Count++;
+                field3 = f;
+
+            } else {
+
+                fixedLength +=
+                    f.end - f.start;
+            }
+        }
+
+        if (field1Count !== 1) {
+            throw new Error(
+                `field1 count=${field1Count}`
+            );
+        }
+
+        if (
+            field3Count !== 1 ||
+            !field3
+        ) {
+            throw new Error(
+                `field3 count=${field3Count}`
+            );
+        }
+
+        const script =
+            normalPayload.subarray(
+                field3.dataStart,
+                field3.dataEnd
+            );
+
+        const field3TagLen =
+            encodeVarint(
+                field3.tag
+            ).length;
+
+        // --------------------------------
+        // 自动计算 Lua trailing padding
+        //
+        // 目标：
+        //
+        // rebuilt.length
+        // ==
+        // 原 Easy payload.length
+        // --------------------------------
+
+        let pad =
+            Math.max(
+                0,
+                targetLength -
+                    fixedLength -
+                    field3TagLen -
+                    script.length -
+                    encodeVarint(
+                        script.length
+                    ).length
+            );
+
+        // protobuf length varint 自身长度
+        // 理论上也可能因 padding 改变，
+        // 迭代几次达到稳定值。
+        for (
+            let i = 0;
+            i < 8;
+            i++
+        ) {
+            const lengthVarintLen =
+                encodeVarint(
+                    script.length + pad
+                ).length;
+
+            const nextPad =
+                targetLength -
+                fixedLength -
+                field3TagLen -
+                lengthVarintLen -
+                script.length;
+
+            if (nextPad === pad) {
+                break;
+            }
+
+            pad = nextPad;
+        }
+
+        if (pad < 0) {
+            throw new Error(
+                "Normal record 比 Easy 槽位更大，" +
+                `超出 ${-pad} bytes`
+            );
+        }
+
+        const spaces =
+            new Uint8Array(pad);
+
+        // ASCII space
+        spaces.fill(0x20);
+
         const parts = [];
 
         for (const f of fields) {
-            if (
-                f.wire === 2 &&
-                replacements[f.fieldNo]
-            ) {
-                const data =
-                    replacements[
-                        f.fieldNo
-                    ];
 
+            // --------------------------------
+            // field 1:
+            // normal -> easy
+            // --------------------------------
+
+            if (
+                f.fieldNo === 1 &&
+                f.wire === 2
+            ) {
                 parts.push(
-                    encodeVarint(f.tag)
+                    encodeVarint(
+                        f.tag
+                    )
                 );
 
                 parts.push(
                     encodeVarint(
-                        data.length
+                        easyIdBytes.length
                     )
                 );
 
-                parts.push(data);
+                parts.push(
+                    easyIdBytes
+                );
 
-            } else {
+            }
+
+            // --------------------------------
+            // field 3:
+            // 原 Normal Lua + trailing spaces
+            // --------------------------------
+
+            else if (
+                f.fieldNo === 3 &&
+                f.wire === 2
+            ) {
+                const newScriptLength =
+                    script.length +
+                    pad;
 
                 parts.push(
-                    copySlice(
-                        message,
+                    encodeVarint(
+                        f.tag
+                    )
+                );
+
+                parts.push(
+                    encodeVarint(
+                        newScriptLength
+                    )
+                );
+
+                parts.push(script);
+
+                if (pad > 0) {
+                    parts.push(spaces);
+                }
+
+            }
+
+            // --------------------------------
+            // 其它 Normal metadata
+            // 原封不动
+            // --------------------------------
+
+            else {
+                parts.push(
+                    sliceCopy(
+                        normalPayload,
                         f.start,
                         f.end
                     )
@@ -606,141 +853,130 @@
             }
         }
 
-        return concat(parts);
-    }
-
-    // ============================================================
-    // Replace one length-delimited protobuf field
-    // in an arbitrary parent message
-    // ============================================================
-
-    function replaceChildRecord(
-        parent,
-        childOuterStart,
-        childPayloadStart,
-        childPayloadEnd,
-        newChildPayload
-    ) {
-        // outer tag
-        const tag =
-            readVarint(
-                parent,
-                childOuterStart
-            );
-
-        if (!tag) {
-            throw new Error(
-                "bad child outer tag"
-            );
-        }
-
-        const oldLen =
-            readVarint(
-                parent,
-                tag.next
-            );
+        const rebuilt =
+            concat(parts);
 
         if (
-            !oldLen ||
-            oldLen.next !==
-                childPayloadStart
+            rebuilt.length !==
+            targetLength
         ) {
             throw new Error(
-                "bad child length"
+                `Length mismatch: ` +
+                `${rebuilt.length} != ` +
+                `${targetLength}`
             );
         }
 
-        const before =
-            parent.subarray(
-                0,
-                childOuterStart
+        return {
+            rebuilt,
+            pad
+        };
+    }
+
+    function extractAsciiField(
+        message,
+        fieldNo
+    ) {
+        const fields =
+            parseFields(message);
+
+        const data =
+            getLengthDelimitedField(
+                message,
+                fields,
+                fieldNo
             );
 
-        const after =
-            parent.subarray(
-                childPayloadEnd
-            );
-
-        return concat([
-            before,
-
-            encodeVarint(
-                tag.value
-            ),
-
-            encodeVarint(
-                newChildPayload.length
-            ),
-
-            newChildPayload,
-
-            after
-        ]);
+        return data
+            ? asciiString(data)
+            : "<missing>";
     }
 
     // ============================================================
     // MAIN
     // ============================================================
 
+    const body =
+        $response.body;
+
+    if (!body) {
+        fail(
+            "未获取到响应体"
+        );
+        return;
+    }
+
     const view =
-        toBytes(
-            $response.body
+        cloneBodyAsUint8Array(
+            body
         );
 
     if (!view) {
         fail(
-            "No binary response body. " +
-            "Enable binary-body-mode=true"
+            "响应体不是二进制数据；" +
+            "请设置 binary-body-mode=true"
         );
         return;
     }
 
     log(
-        `response = ${view.length} bytes`
+        `启动，response size = ` +
+        `${view.length} bytes`
     );
 
     // ============================================================
-    // Discover current daily number
+    // 自动找：
+    //
+    // daily-commander/easy-XXXX
+    //
+    // 然后用同一个 XXXX 构造 Normal ID。
     // ============================================================
 
-    const prefix =
+    const easyPrefix =
         "daily-commander/easy-";
 
-    const prefixPos =
-        findBytes(
-            view,
-            asciiBytes(prefix)
+    const easyPrefixBytes =
+        asciiBytes(
+            easyPrefix
         );
 
-    if (prefixPos < 0) {
+    const easyPrefixPos =
+        findBytes(
+            view,
+            easyPrefixBytes,
+            0
+        );
+
+    if (easyPrefixPos < 0) {
         fail(
-            "Commander Easy not found"
+            "没有找到 " +
+            "daily-commander/easy-*"
         );
         return;
     }
 
-    let pos =
-        prefixPos +
-        prefix.length;
+    let p =
+        easyPrefixPos +
+        easyPrefix.length;
 
     let number = "";
 
     while (
-        pos < view.length &&
-        view[pos] >= 0x30 &&
-        view[pos] <= 0x39
+        p < view.length &&
+        view[p] >= 0x30 &&
+        view[p] <= 0x39
     ) {
         number +=
             String.fromCharCode(
-                view[pos]
+                view[p]
             );
 
-        pos++;
+        p++;
     }
 
     if (!number) {
         fail(
-            "Daily number not found"
+            "未解析到 Daily 编号"
         );
         return;
     }
@@ -752,11 +988,19 @@
         `daily-commander/normal-${number}`;
 
     log(
-        `Daily ${number}`
+        `检测到任务编号 ${number}`
+    );
+
+    log(
+        `目标槽位: ${easyId}`
+    );
+
+    log(
+        `来源任务: ${normalId}`
     );
 
     // ============================================================
-    // Locate Easy + Normal
+    // 找真正的大型 DailyStage record
     // ============================================================
 
     const easy =
@@ -773,243 +1017,222 @@
 
     if (!easy) {
         fail(
-            "Real Easy DailyStage not found"
+            `找不到 Easy DailyStage`
         );
         return;
     }
 
     if (!normal) {
         fail(
-            "Real Normal DailyStage not found"
+            `找不到 Normal DailyStage`
         );
         return;
     }
 
-    log(
-        `Easy: ${easy.stage} ` +
-        `lua=${easy.lua.length}`
-    );
-
-    log(
-        `Normal: ${normal.stage} ` +
-        `lua=${normal.lua.length}`
-    );
-
-    // ============================================================
-    // Build new Easy:
-    //
-    // field1 = original Easy
-    // field2 = Normal stage id
-    // field3 = Normal Lua
-    // field4+ = original Easy
-    // ============================================================
-
-    const normalStageBytes =
-        asciiBytes(
-            normal.stage
-        );
-
-    const newEasyPayload =
-        rebuildMessage(
-            easy.payload,
-            easy.fields,
-            {
-                2: normalStageBytes,
-                3: normal.lua
-            }
-        );
-
-    log(
-        `New Easy payload: ` +
-        `${easy.payload.length} -> ` +
-        `${newEasyPayload.length}`
-    );
-
-    // ============================================================
-    // Now rebuild containing protobuf structure
-    //
-    // Locate common parent containing Easy + Normal
-    // ============================================================
-
-    // We know the DailyStage records live inside a large
-    // length-delimited container.
-    //
-    // Search backward from Easy for a parent whose payload
-    // encloses both Easy and Normal.
-
-    function findParentContainer(
-        buf,
-        childStartA,
-        childEndB
+    // 避免异常 overlap
+    if (
+        easy.payloadEnd >
+            normal.outerTagPos &&
+        normal.payloadEnd >
+            easy.outerTagPos
     ) {
-        const searchStart =
-            Math.max(
-                0,
-                childStartA - 16
-            );
-
-        for (
-            let p = searchStart;
-            p >= 0;
-            p--
-        ) {
-            const tag =
-                readVarint(
-                    buf,
-                    p
-                );
-
-            if (
-                !tag ||
-                (tag.value & 7) !== 2
-            ) {
-                continue;
-            }
-
-            const len =
-                readVarint(
-                    buf,
-                    tag.next
-                );
-
-            if (!len) {
-                continue;
-            }
-
-            const payloadStart =
-                len.next;
-
-            const payloadEnd =
-                payloadStart +
-                len.value;
-
-            if (
-                payloadStart <=
-                    childStartA &&
-                payloadEnd >=
-                    childEndB &&
-                payloadEnd <=
-                    buf.length
-            ) {
-                return {
-                    outerStart: p,
-                    payloadStart,
-                    payloadEnd,
-                    tag: tag.value
-                };
-            }
-        }
-
-        return null;
+        fail(
+            "Easy/Normal record 异常重叠"
+        );
+        return;
     }
 
-    const parent =
-        findParentContainer(
-            view,
-            easy.outerStart,
+    const easyPayload =
+        view.subarray(
+            easy.payloadStart,
+            easy.payloadEnd
+        );
+
+    const normalPayload =
+        view.subarray(
+            normal.payloadStart,
             normal.payloadEnd
         );
 
-    if (!parent) {
-        fail(
-            "Daily parent container not found"
-        );
-        return;
-    }
-
-    const parentPayload =
-        view.subarray(
-            parent.payloadStart,
-            parent.payloadEnd
-        );
-
-    // Convert global offsets -> parent-local offsets
-    const localOuterStart =
-        easy.outerStart -
-        parent.payloadStart;
-
-    const localPayloadStart =
-        easy.payloadStart -
-        parent.payloadStart;
-
-    const localPayloadEnd =
-        easy.payloadEnd -
-        parent.payloadStart;
-
-    let newParentPayload;
+    let easyStageBefore;
+    let normalStage;
 
     try {
-        newParentPayload =
-            replaceChildRecord(
-                parentPayload,
-                localOuterStart,
-                localPayloadStart,
-                localPayloadEnd,
-                newEasyPayload
+        easyStageBefore =
+            extractAsciiField(
+                easyPayload,
+                2
             );
+
+        normalStage =
+            extractAsciiField(
+                normalPayload,
+                2
+            );
+
     } catch (e) {
         fail(
-            `Parent rebuild failed: ${e.message}`
+            `protobuf 解析失败: ` +
+            e.message
+        );
+        return;
+    }
+
+    log(
+        `Easy  record: ` +
+        `${easy.payloadLength} bytes, ` +
+        `stage=${easyStageBefore}`
+    );
+
+    log(
+        `Normal record: ` +
+        `${normal.payloadLength} bytes, ` +
+        `stage=${normalStage}`
+    );
+
+    // ============================================================
+    // 构造新的 Easy payload
+    // ============================================================
+
+    let patch;
+
+    try {
+        patch =
+            rebuildNormalAsEasy(
+                normalPayload,
+                easyId,
+                easy.payloadLength
+            );
+
+    } catch (e) {
+        fail(
+            `构造替换记录失败: ` +
+            e.message
         );
         return;
     }
 
     // ============================================================
-    // Rebuild root response
+    // 真正修改：
+    //
+    // 只覆盖原 Easy payload 区域。
+    //
+    // 外层 protobuf length 不碰。
     // ============================================================
 
-    const rootBefore =
-        view.subarray(
-            0,
-            parent.outerStart
+    view.set(
+        patch.rebuilt,
+        easy.payloadStart
+    );
+
+    // ============================================================
+    // Sanity check
+    // ============================================================
+
+    try {
+        const patchedPayload =
+            view.subarray(
+                easy.payloadStart,
+                easy.payloadEnd
+            );
+
+        const patchedId =
+            extractAsciiField(
+                patchedPayload,
+                1
+            );
+
+        const patchedStage =
+            extractAsciiField(
+                patchedPayload,
+                2
+            );
+
+        if (
+            patchedId !==
+            easyId
+        ) {
+            fail(
+                `field1 校验失败: ` +
+                patchedId
+            );
+            return;
+        }
+
+        if (
+            patchedStage !==
+            normalStage
+        ) {
+            fail(
+                `stage 校验失败: ` +
+                patchedStage
+            );
+            return;
+        }
+
+        log("✅ 注入完成");
+
+        log(
+            `   ${easyStageBefore}` +
+            ` -> ${patchedStage}`
         );
 
-    const rootAfter =
-        view.subarray(
-            parent.payloadEnd
+        log(
+            `   Lua 尾部填充 ` +
+            `${patch.pad} bytes 空格`
         );
 
-    const newResponse =
-        concat([
-            rootBefore,
+        log(
+            `   response 总长度保持 ` +
+            `${view.length} bytes`
+        );
 
-            encodeVarint(
-                parent.tag
-            ),
-
-            encodeVarint(
-                newParentPayload.length
-            ),
-
-            newParentPayload,
-
-            rootAfter
-        ]);
+    } catch (e) {
+        fail(
+            `最终校验失败: ` +
+            e.message
+        );
+        return;
+    }
 
     // ============================================================
-    // Final checks
+    // Headers
     // ============================================================
 
-    log(
-        `✅ Stage swapped`
+    const rawHeaders =
+        $response.headers || {};
+
+    const safeHeaders = {};
+
+    for (const key in rawHeaders) {
+
+        const lower =
+            key.toLowerCase();
+
+        if (
+            lower !==
+                "content-encoding" &&
+            lower !==
+                "content-length"
+        ) {
+            safeHeaders[key] =
+                rawHeaders[key];
+        }
+    }
+
+    safeHeaders[
+        "Content-Length"
+    ] = String(
+        view.length
     );
 
-    log(
-        `   ${easy.stage}`
-    );
+    // ============================================================
+    // 返回本地修改后的响应
+    // ============================================================
 
-    log(
-        `   -> ${normal.stage}`
-    );
-
-    log(
-        `response size: ` +
-        `${view.length} -> ` +
-        `${newResponse.length}`
-    );
-
-    finish(
-        newResponse
-    );
+    $done({
+        body: view,
+        headers: safeHeaders
+    });
 
 })();
