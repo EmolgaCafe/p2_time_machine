@@ -1,11 +1,9 @@
-#!name=🧪 Phoenix 2 Daily Normal -> Easy
-#!desc=实验性：将当前 Commander Normal 每日任务完整覆盖到 Easy 槽位，仅修改本地 Login 响应
+#!name=📦 Phoenix 2 Daily Stage Exporter
+#!desc=自动提取 LoginResponse 中的每日任务并保存到 Loon 本地
 #!author=zy
-#!icon=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png
-#!date=2026-09-06
 
 [Script]
-http-response ^https?:\/\/proxy-phoenix2\.firigames\.com\/phoenix2\/backend\/login script-path=https://raw.githubusercontent.com/EmolgaCafe/p2_time_machine/main/p2_daily_normal_to_easy.js, requires-body=true, binary-body-mode=true, timeout=10, tag=P2 Daily Normal->Easy
+http-response ^https?:\/\/proxy-phoenix2\.firigames\.com\/phoenix2\/backend\/login script-path=https://raw.githubusercontent.com/EmolgaCafe/p2_time_machine/main/p2_daily_exporter.js, requires-body=true, binary-body-mode=true, timeout=10, tag=P2 Daily Exporter
 
 [Mitm]
 hostname = proxy-phoenix2.firigames.com
