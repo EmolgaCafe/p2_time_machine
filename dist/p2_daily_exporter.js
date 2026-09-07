@@ -979,9 +979,39 @@
             rank,
             dailyId,
             slot,
-            difficulty,
-            missionId: `daily-${rank}/${difficulty}-${dailyId}`
+            difficulty
           };
+        }
+        function resolveSavedMission(selection2) {
+          let index;
+          try {
+            index = readPackageIndex();
+          } catch (e) {
+            log(
+              `index read error: ` + e.message
+            );
+            return null;
+          }
+          const expectedRank = selection2.rank.toLowerCase();
+          const expectedDifficulty = selection2.difficulty.toLowerCase();
+          const expectedDailyId = String(
+            selection2.dailyId
+          );
+          for (const missionId of index) {
+            const match = /^daily-([^/]+)\/(easy|normal|hard)-(\d+)$/i.exec(
+              missionId
+            );
+            if (!match) {
+              continue;
+            }
+            const rank = match[1].toLowerCase();
+            const difficulty = match[2].toLowerCase();
+            const dailyId = match[3];
+            if (rank === expectedRank && difficulty === expectedDifficulty && dailyId === expectedDailyId) {
+              return missionId;
+            }
+          }
+          return null;
         }
         let control = $persistentStore.read(
           CONTROL_KEY
@@ -1029,11 +1059,11 @@
         );
         if (!selection) {
           log(
-            `idle / invalid control: "${control}"`
+            `invalid control: "${control}"`
           );
           notify(
             "\u672A\u6267\u884C",
-            control || "p2 \u672A\u8BBE\u7F6E"
+            control || "p2 \u65E0\u6548"
           );
           finishUnmodified();
           return;
@@ -1084,11 +1114,11 @@
               if (result.ok) {
                 saved++;
                 log(
-                  `saved ${stage.missionId}`
+                  `saved ` + stage.missionId
                 );
               } else {
                 log(
-                  `save failed ${stage.missionId}`
+                  `save failed ` + stage.missionId
                 );
               }
             } catch (e) {
@@ -1104,9 +1134,22 @@
           finishUnmodified();
         }
         function runReplay(responseBody, selection2) {
-          const missionId = selection2.missionId;
+          const missionId = resolveSavedMission(
+            selection2
+          );
+          if (!missionId) {
+            log(
+              `not found: ` + selection2.selector
+            );
+            notify(
+              "\u4EFB\u52A1\u4E0D\u5B58\u5728",
+              selection2.selector
+            );
+            finishUnmodified();
+            return;
+          }
           log(
-            `lookup ${missionId}`
+            `resolved ${selection2.selector} -> ${missionId}`
           );
           let pkg;
           try {
@@ -1126,7 +1169,7 @@
           }
           if (!pkg) {
             log(
-              `not found: ${missionId}`
+              `package missing: ` + missionId
             );
             notify(
               "\u4EFB\u52A1\u4E0D\u5B58\u5728",
@@ -1166,7 +1209,7 @@
             result.body.length
           );
           log(
-            `REPLAY OK`
+            "REPLAY OK"
           );
           log(
             `${result.sourceMissionId} -> ${result.targetMissionId}`
